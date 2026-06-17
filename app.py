@@ -2,6 +2,7 @@
 """
 Havirov Coin – Kompletní aplikace (GUI + server + miner)
 Opravená verze s robustním TCP serverem, synchronizací a detailními chybovými hláškami.
+Veškerý text je 2× větší a tučný (font 28 bodů).
 """
 
 import sys
@@ -99,9 +100,9 @@ def faucetpay_deposit(amount_usdt):
     <input type="hidden" name="currency1" value="USDT">
     <input type="hidden" name="currency2" value="">
     <input type="hidden" name="custom" value="deposit_{int(time.time())}">
-    <input type="hidden" name="callback_url" value="http://localhost:9999/callback">
-    <input type="hidden" name="success_url" value="http://localhost:9999/success">
-    <input type="hidden" name="cancel_url" value="http://localhost:9999/cancel">
+    <input type="hidden" name="callback_url" value="http://alfa.wz.cz/callback">
+    <input type="hidden" name="success_url" value="http://alfa.wz.cz:9999/success">
+    <input type="hidden" name="cancel_url" value="http://alfa.wz.cz:9999/cancel">
     <input type="submit" value="Pokračovat na FaucetPay" style="background:#ff7e05;color:white;border:none;padding:15px 30px;font-size:18px;border-radius:25px;cursor:pointer;font-weight:bold;">
     </form>
     <p style="margin-top:20px;color:#666;">Pokud nejste přesměrováni, klikněte na tlačítko.</p>
@@ -151,7 +152,7 @@ def faucetpay_withdraw(amount_usdt, to_address):
     with os.fdopen(fd, 'w', encoding='utf-8') as f:
         f.write(html_content)
     webbrowser.open('file://' + path)
-    return True, f"Otevřen formulář pro výběr {amount_usdt:.8f} USDT.\nPo dokončení platby klikněte na 'Aktualizovat zůstatek'."
+    return True, f"Otevřen formulář pro výběr {amount_usdt:.8f} USDT.\nPo dokončení platby klikněte v aplikaci na 'Aktualizovat zůstatek'."
 
 def faucetpay_get_buy_rate():
     return BASE_RATE * (1 + SPREAD)
@@ -666,19 +667,16 @@ class MainWindow(QMainWindow):
 
         header = QHBoxLayout()
         title = QLabel('Havirov Coin')
-        title.setFont(QFont('Segoe UI', 24, QFont.Bold))
+        # Barva a velikost budou řešeny globálním stylem, ale ponecháme barevný styl
         title.setStyleSheet('color: #ff7e05;')
-        badge = QLabel('PROD')
-        badge.setStyleSheet('background: #198754; color: white; border-radius: 12px; padding: 4px 16px; font-weight: bold; font-size: 15px;')
         header.addWidget(title)
-        header.addWidget(badge)
         header.addStretch()
         header.addWidget(QLabel(datetime.now().strftime('%H:%M:%S')))
         main_layout.addLayout(header)
 
         self.tabs = QTabWidget()
         self.tabs.setStyleSheet('''
-            QTabBar::tab { padding: 8px 24px; border-radius: 20px; font-weight: 700; font-size: 14px; }
+            QTabBar::tab { padding: 15px 30px; border-radius: 20px; font-weight: bold; font-size: 28px; }
             QTabBar::tab:selected { background: #ff7e05; color: white; }
             QTabBar::tab:hover { background: #e9edf4; }
         ''')
@@ -704,7 +702,7 @@ class MainWindow(QMainWindow):
 
         footer = QLabel('Havirov Coin · Ostrá verze · Připojení RPI PICO přes sériový port nebo TCP')
         footer.setAlignment(Qt.AlignCenter)
-        footer.setStyleSheet('color: #7b8a9b; font-size: 13px; padding: 8px; font-weight: 500;')
+        footer.setStyleSheet('color: #7b8a9b; padding: 8px;')
         main_layout.addWidget(footer)
 
         self.timer = QTimer()
@@ -759,7 +757,7 @@ class MainWindow(QMainWindow):
         event.accept()
 
 # ============================================================
-#  DASHBOARD TAB
+#  DASHBOARD TAB – UPRAVENO: zobrazuje "Můj zůstatek" místo "Celkem HAV"
 # ============================================================
 
 class DashboardTab(QWidget):
@@ -773,7 +771,7 @@ class DashboardTab(QWidget):
         self.cards = {}
         labels = [
             ('price', 'Aktuální cena', f'{BASE_RATE:.12f} USDT'),
-            ('total_supply', 'Celkem HAV', '0'),
+            ('wallet_balance', 'Můj zůstatek', '0 HAV'),
             ('active_miners', 'Aktivních zařízení', '0'),
             ('pool_tvl', 'Celkem v Poolu', '0 HAV')
         ]
@@ -789,7 +787,7 @@ class DashboardTab(QWidget):
         graph_layout.setSpacing(10)
 
         left = QGroupBox('Cena HAV / USDT (24h)')
-        left.setStyleSheet('QGroupBox { font-weight: 700; padding: 10px; font-size: 14px; }')
+        left.setStyleSheet('QGroupBox { font-weight: bold; padding: 10px; }')
         left_layout = QVBoxLayout(left)
         self.price_canvas = MplCanvas(self, width=8, height=3)
         left_layout.addWidget(self.price_canvas)
@@ -798,7 +796,7 @@ class DashboardTab(QWidget):
         layout.addLayout(graph_layout)
 
         dist_group = QGroupBox('Distribuce odměn')
-        dist_group.setStyleSheet('QGroupBox { font-weight: 700; padding: 10px; font-size: 14px; }')
+        dist_group.setStyleSheet('QGroupBox { font-weight: bold; padding: 10px; }')
         dist_layout = QHBoxLayout(dist_group)
 
         self.reward_table = QTableWidget()
@@ -822,13 +820,12 @@ class DashboardTab(QWidget):
         layout = QVBoxLayout(card)
         layout.setSpacing(4)
         lbl_title = QLabel(title)
-        lbl_title.setStyleSheet('color: #7b8a9b; font-size: 13px; font-weight: 600;')
+        lbl_title.setStyleSheet('color: #7b8a9b;')
         layout.addWidget(lbl_title)
         val_label = QLabel(default)
-        val_label.setFont(QFont('Segoe UI', 22, QFont.Bold))
         layout.addWidget(val_label)
         sub_label = QLabel('—')
-        sub_label.setStyleSheet('color: #7b8a9b; font-size: 12px; font-weight: 500;')
+        sub_label.setStyleSheet('color: #7b8a9b;')
         layout.addWidget(sub_label)
 
         card._val_label = val_label
@@ -841,8 +838,10 @@ class DashboardTab(QWidget):
 
         self.cards['price']._val_label.setText(f'{current_price:.12f} USDT')
         self.cards['price']._sub_label.setText(f'nákup {current_price*(1+SPREAD):.12f} / prodej {current_price*(1-SPREAD):.12f}')
-        self.cards['total_supply']._val_label.setText(f'{state.total_supply:,.0f}')
-        self.cards['total_supply']._sub_label.setText('—')
+
+        self.cards['wallet_balance']._val_label.setText(f'{state.wallet_balance:.2f} HAV')
+        self.cards['wallet_balance']._sub_label.setText('—')
+
         self.cards['active_miners']._val_label.setText(str(active))
         self.cards['active_miners']._sub_label.setText(f'{active} zařízení připojeno' if active else '—')
         self.cards['pool_tvl']._val_label.setText(f'{state.pool["total_liquidity"]:.2f} HAV')
@@ -882,7 +881,7 @@ class DashboardTab(QWidget):
     def _update_pie_chart(self, entries):
         self.reward_pie_canvas.ax.clear()
         if not entries:
-            self.reward_pie_canvas.ax.text(0.5, 0.5, 'Žádná data', ha='center', va='center', fontsize=14)
+            self.reward_pie_canvas.ax.text(0.5, 0.5, 'Žádná data', ha='center', va='center')
             self.reward_pie_canvas.draw()
             return
         labels = [e[0] for e in entries]
@@ -906,10 +905,10 @@ class MiningTab(QWidget):
         left = QWidget()
         left_layout = QVBoxLayout(left)
         header = QHBoxLayout()
-        header.addWidget(QLabel('Připojená zařízení', font=QFont('Segoe UI', 14, QFont.Bold)))
+        header.addWidget(QLabel('Připojená zařízení'))
         header.addStretch()
         self.miner_count_label = QLabel('0')
-        self.miner_count_label.setStyleSheet('background: #6c757d; color: white; border-radius: 12px; padding: 4px 18px; font-weight: bold; font-size: 14px;')
+        self.miner_count_label.setStyleSheet('background: #6c757d; color: white; border-radius: 12px; padding: 4px 18px;')
         header.addWidget(self.miner_count_label)
         left_layout.addLayout(header)
 
@@ -924,35 +923,92 @@ class MiningTab(QWidget):
         right = QWidget()
         right_layout = QVBoxLayout(right)
 
-        right_layout.addWidget(QLabel('Surová data z HW', font=QFont('Segoe UI', 14, QFont.Bold)))
+        right_layout.addWidget(QLabel('Surová data z HW'))
 
         self.raw_data_display = QTextEdit()
         self.raw_data_display.setReadOnly(True)
-        self.raw_data_display.setFont(QFont('Courier New', 10))
+        self.raw_data_display.setFont(QFont('Courier New', 18))  # 2x větší než původní 10
         self.raw_data_display.setStyleSheet('background: #1e1e1e; color: #d4d4d4; border-radius: 8px; padding: 8px;')
         right_layout.addWidget(self.raw_data_display)
 
         ctrl_layout = QHBoxLayout()
         self.connect_btn = QPushButton('Připojit zařízení (sériový port)')
-        self.connect_btn.setStyleSheet('QPushButton { background: #ff7e05; color: white; font-weight: bold; font-size: 14px; padding: 8px 16px; border-radius: 20px; } QPushButton:hover { background: #e66e00; }')
+        self.connect_btn.setStyleSheet('''
+            QPushButton {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #ff7e05, stop:1 #f97316);
+                color: white; font-weight: bold;
+                padding: 15px 30px; border-radius: 25px;
+                border: none;
+            }
+            QPushButton:hover {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #e66e00, stop:1 #e06600);
+            }
+            QPushButton:pressed {
+                background: #cc5c00;
+            }
+        ''')
         self.connect_btn.clicked.connect(self._connect_device)
         ctrl_layout.addWidget(self.connect_btn)
 
+        self.connect_all_btn = QPushButton('Připojit všechny RPI PICO')
+        self.connect_all_btn.setStyleSheet('''
+            QPushButton {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #0d6efd, stop:1 #0b5ed7);
+                color: white; font-weight: bold;
+                padding: 15px 30px; border-radius: 25px;
+                border: none;
+            }
+            QPushButton:hover {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #0b5ed7, stop:1 #0a58ca);
+            }
+            QPushButton:pressed {
+                background: #084298;
+            }
+        ''')
+        self.connect_all_btn.clicked.connect(self._connect_all_devices)
+        ctrl_layout.addWidget(self.connect_all_btn)
+
         self.disconnect_btn = QPushButton('Odpojit vše')
-        self.disconnect_btn.setStyleSheet('QPushButton { background: #dc3545; color: white; font-weight: bold; font-size: 14px; padding: 8px 16px; border-radius: 20px; } QPushButton:hover { background: #c82333; }')
+        self.disconnect_btn.setStyleSheet('''
+            QPushButton {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #dc3545, stop:1 #c82333);
+                color: white; font-weight: bold;
+                padding: 15px 30px; border-radius: 25px;
+                border: none;
+            }
+            QPushButton:hover {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #c82333, stop:1 #b02a37);
+            }
+            QPushButton:pressed {
+                background: #a71d2a;
+            }
+        ''')
         self.disconnect_btn.clicked.connect(self._disconnect_all)
         self.disconnect_btn.hide()
         ctrl_layout.addWidget(self.disconnect_btn)
 
         self.clear_btn = QPushButton('Vymazat data')
-        self.clear_btn.setStyleSheet('QPushButton { background: #6c757d; color: white; font-weight: bold; font-size: 14px; padding: 8px 16px; border-radius: 20px; } QPushButton:hover { background: #5a6268; }')
+        self.clear_btn.setStyleSheet('''
+            QPushButton {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #6c757d, stop:1 #5a6268);
+                color: white; font-weight: bold;
+                padding: 15px 30px; border-radius: 25px;
+                border: none;
+            }
+            QPushButton:hover {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #5a6268, stop:1 #4e555b);
+            }
+            QPushButton:pressed {
+                background: #42484e;
+            }
+        ''')
         self.clear_btn.clicked.connect(lambda: self.raw_data_display.clear())
         ctrl_layout.addWidget(self.clear_btn)
 
         right_layout.addLayout(ctrl_layout)
 
         self.device_status = QLabel('Stav: 0 zařízení připojeno')
-        self.device_status.setStyleSheet('background: #cfe2ff; border-radius: 8px; padding: 8px; font-size: 14px; font-weight: 600;')
+        self.device_status.setStyleSheet('background: #cfe2ff; border-radius: 8px; padding: 8px;')
         right_layout.addWidget(self.device_status)
 
         layout.addWidget(right, 2)
@@ -1001,11 +1057,47 @@ class MiningTab(QWidget):
         save_state()
         QMessageBox.information(self, 'Připojeno', f'Zařízení {device_name} bylo připojeno.')
 
+    def _connect_all_devices(self):
+        """Připojí všechny dostupné sériové porty jako RPI PICO minery najednou."""
+        ports = serial.tools.list_ports.comports()
+        if not ports:
+            QMessageBox.warning(self, 'Žádné porty', 'Nebyl nalezen žádný sériový port.')
+            return
+
+        connected_count = 0
+        for p in ports:
+            port = p.device
+            if any(d['port'] == port for d in state.devices):
+                continue
+
+            dev = {
+                'name': f'RPI {port}',
+                'port': port,
+                'connected': True,
+                'thread': None,
+                'network': False
+            }
+            state.devices.append(dev)
+
+            thread = SerialReaderThread(port, 115200, dev['name'], self.main_window.mining_core)
+            thread.error_occurred.connect(lambda err, d=dev: self._serial_error(err, d))
+            thread.data_received.connect(self._on_serial_data)
+            thread.start()
+            dev['thread'] = thread
+            self.reader_threads.append(thread)
+            connected_count += 1
+
+        if connected_count > 0:
+            self.main_window.mining_core.devices_changed.emit()
+            self.refresh_device_table()
+            save_state()
+            QMessageBox.information(self, 'Připojeno', f'Připojeno {connected_count} zařízení.')
+        else:
+            QMessageBox.information(self, 'Žádná nová zařízení', 'Všechny dostupné porty jsou již připojeny.')
+
     def _on_serial_data(self, device_name, line):
-        # Uložíme poslední hodnotu a rozešleme
         with state._lock:
             state.device_data[device_name] = line
-        # Rozešleme TCP klientům
         if self.main_window:
             self.main_window.tcp_server.broadcast_device_data(device_name, line, sender=None)
         self.add_raw_line(device_name, line)
@@ -1038,7 +1130,7 @@ class MiningTab(QWidget):
         active = [d for d in state.devices if d['connected']]
         self.miner_count_label.setText(str(len(active)))
         self.device_status.setText(f'Stav: {len(active)} zařízení připojeno')
-        self.device_status.setStyleSheet('background: #d1e7dd; border-radius: 8px; padding: 8px; font-size: 14px; font-weight: 600;' if active else 'background: #cfe2ff; border-radius: 8px; padding: 8px; font-size: 14px; font-weight: 600;')
+        self.device_status.setStyleSheet('background: #d1e7dd; border-radius: 8px; padding: 8px;' if active else 'background: #cfe2ff; border-radius: 8px; padding: 8px;')
         self.disconnect_btn.setVisible(bool(active))
 
         self.device_table.setUpdatesEnabled(False)
@@ -1049,8 +1141,6 @@ class MiningTab(QWidget):
             self.device_table.setItem(i, 2, QTableWidgetItem('🟢 Aktivní'))
         self.device_table.resizeColumnsToContents()
         self.device_table.setUpdatesEnabled(True)
-        self.device_table.setFont(QFont('Segoe UI', 12))
-        self.device_table.horizontalHeader().setFont(QFont('Segoe UI', 12, QFont.Bold))
 
     def add_raw_line(self, device_name, line):
         timestamp = datetime.now().strftime('%H:%M:%S.%f')[:-3]
@@ -1086,40 +1176,78 @@ class WalletTab(QWidget):
         left_layout.setAlignment(Qt.AlignTop)
         left_layout.setSpacing(10)
 
-        left_layout.addWidget(QLabel('Moje peněženka', font=QFont('Segoe UI', 18, QFont.Bold)))
+        left_layout.addWidget(QLabel('Moje peněženka'))
 
         addr_layout = QHBoxLayout()
         self.address_label = QLabel(state.wallet_address)
-        self.address_label.setStyleSheet('background: #eef2f7; padding: 6px 18px; border-radius: 20px; font-family: monospace; font-size: 14px;')
+        self.address_label.setStyleSheet('background: #eef2f7; padding: 6px 18px; border-radius: 20px; font-family: monospace;')
         self.address_label.setWordWrap(True)
         addr_layout.addWidget(self.address_label)
         copy_btn = QPushButton('Kopírovat')
-        copy_btn.setStyleSheet('QPushButton { background: #0d6efd; color: white; font-weight: bold; font-size: 13px; padding: 6px 14px; border-radius: 16px; } QPushButton:hover { background: #0b5ed7; }')
+        copy_btn.setStyleSheet('''
+            QPushButton {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #0d6efd, stop:1 #0b5ed7);
+                color: white; font-weight: bold;
+                padding: 10px 20px; border-radius: 16px;
+                border: none;
+            }
+            QPushButton:hover {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #0b5ed7, stop:1 #0a58ca);
+            }
+            QPushButton:pressed {
+                background: #084298;
+            }
+        ''')
         copy_btn.clicked.connect(self._copy_address)
         addr_layout.addWidget(copy_btn)
         self.copy_feedback = QLabel('')
-        self.copy_feedback.setStyleSheet('color: green; font-size: 13px; font-weight: 600;')
+        self.copy_feedback.setStyleSheet('color: green;')
         addr_layout.addWidget(self.copy_feedback)
         addr_layout.addStretch()
         left_layout.addLayout(addr_layout)
 
         new_addr_btn = QPushButton('Nová adresa')
-        new_addr_btn.setStyleSheet('QPushButton { background: #6c757d; color: white; font-weight: bold; font-size: 13px; padding: 6px 14px; border-radius: 16px; } QPushButton:hover { background: #5a6268; }')
+        new_addr_btn.setStyleSheet('''
+            QPushButton {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #6c757d, stop:1 #5a6268);
+                color: white; font-weight: bold;
+                padding: 10px 20px; border-radius: 16px;
+                border: none;
+            }
+            QPushButton:hover {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #5a6268, stop:1 #4e555b);
+            }
+            QPushButton:pressed {
+                background: #42484e;
+            }
+        ''')
         new_addr_btn.clicked.connect(self._new_address)
         left_layout.addWidget(new_addr_btn)
 
         self.balance_label = QLabel('0.00 HAV')
-        self.balance_label.setFont(QFont('Segoe UI', 28, QFont.Bold))
         left_layout.addWidget(self.balance_label)
 
         current_price = state.price_history[-1] if state.price_history else BASE_RATE
         usdt_value = state.wallet_balance * current_price
         self.usd_label = QLabel(f'≈ {usdt_value:.12f} USDT')
-        self.usd_label.setStyleSheet('color: #198754; font-size: 16px; font-weight: 600;')
+        self.usd_label.setStyleSheet('color: #198754;')
         left_layout.addWidget(self.usd_label)
 
         send_btn = QPushButton('Odeslat HAV')
-        send_btn.setStyleSheet('QPushButton { background: #ff7e05; color: white; font-weight: bold; font-size: 14px; padding: 8px 20px; border-radius: 20px; } QPushButton:hover { background: #e66e00; }')
+        send_btn.setStyleSheet('''
+            QPushButton {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #ff7e05, stop:1 #f97316);
+                color: white; font-weight: bold;
+                padding: 15px 30px; border-radius: 25px;
+                border: none;
+            }
+            QPushButton:hover {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #e66e00, stop:1 #e06600);
+            }
+            QPushButton:pressed {
+                background: #cc5c00;
+            }
+        ''')
         send_btn.clicked.connect(self._show_send_dialog)
         left_layout.addWidget(send_btn)
 
@@ -1127,15 +1255,13 @@ class WalletTab(QWidget):
 
         right = QWidget()
         right_layout = QVBoxLayout(right)
-        right_layout.addWidget(QLabel('Historie transakcí', font=QFont('Segoe UI', 16, QFont.Bold)))
+        right_layout.addWidget(QLabel('Historie transakcí'))
 
         self.tx_table = QTableWidget()
         self.tx_table.setColumnCount(4)
         self.tx_table.setHorizontalHeaderLabels(['Typ', 'Částka', 'Adresa', 'Čas'])
         self.tx_table.horizontalHeader().setStretchLastSection(True)
         self.tx_table.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        self.tx_table.setFont(QFont('Segoe UI', 12))
-        self.tx_table.horizontalHeader().setFont(QFont('Segoe UI', 12, QFont.Bold))
         right_layout.addWidget(self.tx_table)
 
         layout.addWidget(right, 2)
@@ -1190,33 +1316,57 @@ class SendDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle('Odeslat HAV')
-        self.setFixedSize(450, 280)
+        self.setFixedSize(700, 400)
         layout = QVBoxLayout(self)
         layout.setSpacing(12)
 
-        layout.addWidget(QLabel('Adresa příjemce', font=QFont('Segoe UI', 12, QFont.Bold)))
+        layout.addWidget(QLabel('Adresa příjemce'))
         self.address_edit = QLineEdit()
         self.address_edit.setPlaceholderText('0x...')
-        self.address_edit.setFont(QFont('Segoe UI', 12))
         layout.addWidget(self.address_edit)
 
-        layout.addWidget(QLabel('Částka (HAV)', font=QFont('Segoe UI', 12, QFont.Bold)))
+        layout.addWidget(QLabel('Částka (HAV)'))
         self.amount_edit = QLineEdit()
         self.amount_edit.setPlaceholderText('0.00')
-        self.amount_edit.setFont(QFont('Segoe UI', 12))
         layout.addWidget(self.amount_edit)
 
         self.message = QLabel('Zadejte adresu a částku.')
-        self.message.setStyleSheet('background: #cfe2ff; padding: 8px; border-radius: 8px; font-weight: 600; font-size: 13px;')
+        self.message.setStyleSheet('background: #cfe2ff; padding: 8px; border-radius: 8px;')
         self.message.setWordWrap(True)
         layout.addWidget(self.message)
 
         btn_layout = QHBoxLayout()
         cancel_btn = QPushButton('Zavřít')
-        cancel_btn.setStyleSheet('QPushButton { background: #6c757d; color: white; font-weight: bold; font-size: 13px; padding: 6px 16px; border-radius: 16px; }')
+        cancel_btn.setStyleSheet('''
+            QPushButton {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #6c757d, stop:1 #5a6268);
+                color: white; font-weight: bold;
+                padding: 10px 20px; border-radius: 16px;
+                border: none;
+            }
+            QPushButton:hover {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #5a6268, stop:1 #4e555b);
+            }
+            QPushButton:pressed {
+                background: #42484e;
+            }
+        ''')
         cancel_btn.clicked.connect(self.reject)
         send_btn = QPushButton('Odeslat')
-        send_btn.setStyleSheet('QPushButton { background: #ff7e05; color: white; font-weight: bold; font-size: 13px; padding: 6px 16px; border-radius: 16px; }')
+        send_btn.setStyleSheet('''
+            QPushButton {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #ff7e05, stop:1 #f97316);
+                color: white; font-weight: bold;
+                padding: 10px 20px; border-radius: 16px;
+                border: none;
+            }
+            QPushButton:hover {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #e66e00, stop:1 #e06600);
+            }
+            QPushButton:pressed {
+                background: #cc5c00;
+            }
+        ''')
         send_btn.clicked.connect(self._send)
         btn_layout.addWidget(cancel_btn)
         btn_layout.addWidget(send_btn)
@@ -1230,15 +1380,15 @@ class SendDialog(QDialog):
             amount = float(self.amount_edit.text().strip())
         except ValueError:
             self.message.setText('Zadejte platnou částku.')
-            self.message.setStyleSheet('background: #f8d7da; padding: 8px; border-radius: 8px; font-weight: 600;')
+            self.message.setStyleSheet('background: #f8d7da; padding: 8px; border-radius: 8px;')
             return
         if not addr or len(addr) < 10:
             self.message.setText('Zadejte platnou adresu.')
-            self.message.setStyleSheet('background: #f8d7da; padding: 8px; border-radius: 8px; font-weight: 600;')
+            self.message.setStyleSheet('background: #f8d7da; padding: 8px; border-radius: 8px;')
             return
         if amount <= 0:
             self.message.setText('Zadejte kladnou částku.')
-            self.message.setStyleSheet('background: #f8d7da; padding: 8px; border-radius: 8px; font-weight: 600;')
+            self.message.setStyleSheet('background: #f8d7da; padding: 8px; border-radius: 8px;')
             return
         self._data = (addr, amount)
         self.accept()
@@ -1257,90 +1407,137 @@ class SwapTab(QWidget):
         layout.setSpacing(12)
 
         left = QGroupBox('Swap HAV / USDT')
-        left.setStyleSheet('QGroupBox { font-weight: 700; padding: 16px; font-size: 14px; }')
+        left.setStyleSheet('QGroupBox { font-weight: bold; padding: 16px; }')
         left_layout = QVBoxLayout(left)
 
-        left_layout.addWidget(QLabel('Množství HAV', font=QFont('Segoe UI', 13, QFont.Bold)))
+        left_layout.addWidget(QLabel('Množství HAV'))
         amt_layout = QHBoxLayout()
         self.amount_input = QLineEdit('10000')
-        self.amount_input.setFont(QFont('Segoe UI', 14))
         amt_layout.addWidget(self.amount_input)
-        amt_layout.addWidget(QLabel('HAV', font=QFont('Segoe UI', 13, QFont.Bold)))
+        amt_layout.addWidget(QLabel('HAV'))
         left_layout.addLayout(amt_layout)
 
-        left_layout.addWidget(QLabel('⬇', alignment=Qt.AlignCenter, font=QFont('Segoe UI', 14, QFont.Bold)))
+        left_layout.addWidget(QLabel('⬇', alignment=Qt.AlignCenter))
 
-        left_layout.addWidget(QLabel('Obdržíte', font=QFont('Segoe UI', 13, QFont.Bold)))
+        left_layout.addWidget(QLabel('Obdržíte'))
         result_layout = QHBoxLayout()
         self.result_input = QLineEdit('0.00000001')
         self.result_input.setReadOnly(True)
-        self.result_input.setFont(QFont('Segoe UI', 14))
         result_layout.addWidget(self.result_input)
-        result_layout.addWidget(QLabel('USDT', font=QFont('Segoe UI', 13, QFont.Bold)))
+        result_layout.addWidget(QLabel('USDT'))
         left_layout.addLayout(result_layout)
 
         rate_info = QLabel()
-        rate_info.setStyleSheet('font-weight: 600; color: #0d6efd; font-size: 13px;')
+        rate_info.setStyleSheet('color: #0d6efd;')
         left_layout.addWidget(rate_info)
         self.rate_info_label = rate_info
 
         fee_label = QLabel(f'Poplatek za transakci: {TRANSACTION_FEE*100:.0f} %')
-        fee_label.setStyleSheet('color: #6c757d; font-size: 12px;')
+        fee_label.setStyleSheet('color: #6c757d;')
         left_layout.addWidget(fee_label)
 
         recipient_label = QLabel(f'Příjemce USDT: FaucetPay {FAUCETPAY_MERCHANT_ID}')
-        recipient_label.setStyleSheet('font-weight: 700; color: #0d6efd; font-size: 14px; background: #e9edf4; padding: 4px; border-radius: 6px;')
+        recipient_label.setStyleSheet('color: #0d6efd; background: #e9edf4; padding: 4px; border-radius: 6px;')
         left_layout.addWidget(recipient_label)
 
         self.balance_label = QLabel(f'FaucetPay USDT zůstatek: 0.00000000')
-        self.balance_label.setStyleSheet('font-weight: 700; color: #0d6efd; font-size: 14px;')
+        self.balance_label.setStyleSheet('color: #0d6efd;')
         left_layout.addWidget(self.balance_label)
 
         swap_btn = QPushButton('Swap HAV → USDT (prodej)')
-        swap_btn.setStyleSheet('QPushButton { background: #ff7e05; color: white; font-weight: bold; font-size: 14px; padding: 8px 16px; border-radius: 20px; } QPushButton:hover { background: #e66e00; }')
+        swap_btn.setStyleSheet('''
+            QPushButton {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #ff7e05, stop:1 #f97316);
+                color: white; font-weight: bold;
+                padding: 15px 30px; border-radius: 25px;
+                border: none;
+            }
+            QPushButton:hover {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #e66e00, stop:1 #e06600);
+            }
+            QPushButton:pressed {
+                background: #cc5c00;
+            }
+        ''')
         swap_btn.clicked.connect(self._do_sell)
         left_layout.addWidget(swap_btn)
 
         buy_btn = QPushButton('Swap USDT → HAV (nákup)')
-        buy_btn.setStyleSheet('QPushButton { background: #198754; color: white; font-weight: bold; font-size: 14px; padding: 8px 16px; border-radius: 20px; } QPushButton:hover { background: #157347; }')
+        buy_btn.setStyleSheet('''
+            QPushButton {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #198754, stop:1 #157347);
+                color: white; font-weight: bold;
+                padding: 15px 30px; border-radius: 25px;
+                border: none;
+            }
+            QPushButton:hover {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #157347, stop:1 #146c43);
+            }
+            QPushButton:pressed {
+                background: #0f5132;
+            }
+        ''')
         buy_btn.clicked.connect(self._do_buy)
         left_layout.addWidget(buy_btn)
 
         layout.addWidget(left, 1)
 
         right = QGroupBox('Deposit / Withdraw USDT')
-        right.setStyleSheet('QGroupBox { font-weight: 700; padding: 16px; font-size: 14px; }')
+        right.setStyleSheet('QGroupBox { font-weight: bold; padding: 16px; }')
         right_layout = QVBoxLayout(right)
 
-        right_layout.addWidget(QLabel('FaucetPay účet', font=QFont('Segoe UI', 13, QFont.Bold)))
-        right_layout.addWidget(QLabel(f'ID: {FAUCETPAY_MERCHANT_ID}', styleSheet='font-family: monospace; font-size: 14px; background: #eef2f7; padding: 4px; border-radius: 4px;'))
+        right_layout.addWidget(QLabel('FaucetPay účet'))
+        right_layout.addWidget(QLabel(f'ID: {FAUCETPAY_MERCHANT_ID}', styleSheet='font-family: monospace; background: #eef2f7; padding: 4px; border-radius: 4px;'))
 
         right_layout.addWidget(QLabel('-' * 30))
 
-        right_layout.addWidget(QLabel('Vklad (Deposit)', font=QFont('Segoe UI', 12, QFont.Bold)))
+        right_layout.addWidget(QLabel('Vklad (Deposit)'))
         dep_layout = QHBoxLayout()
         self.deposit_input = QLineEdit()
         self.deposit_input.setPlaceholderText('Množství USDT')
-        self.deposit_input.setFont(QFont('Segoe UI', 12))
         dep_layout.addWidget(self.deposit_input)
         dep_btn = QPushButton('Otevřít FaucetPay Deposit')
-        dep_btn.setStyleSheet('QPushButton { background: #0d6efd; color: white; font-weight: bold; font-size: 13px; padding: 6px 14px; border-radius: 16px; } QPushButton:hover { background: #0b5ed7; }')
+        dep_btn.setStyleSheet('''
+            QPushButton {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #0d6efd, stop:1 #0b5ed7);
+                color: white; font-weight: bold;
+                padding: 12px 24px; border-radius: 20px;
+                border: none;
+            }
+            QPushButton:hover {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #0b5ed7, stop:1 #0a58ca);
+            }
+            QPushButton:pressed {
+                background: #084298;
+            }
+        ''')
         dep_btn.clicked.connect(self._do_deposit)
         dep_layout.addWidget(dep_btn)
         right_layout.addLayout(dep_layout)
 
-        right_layout.addWidget(QLabel('Výběr (Withdraw)', font=QFont('Segoe UI', 12, QFont.Bold)))
+        right_layout.addWidget(QLabel('Výběr (Withdraw)'))
         wd_layout = QHBoxLayout()
         self.withdraw_input = QLineEdit()
         self.withdraw_input.setPlaceholderText('Množství USDT')
-        self.withdraw_input.setFont(QFont('Segoe UI', 12))
         wd_layout.addWidget(self.withdraw_input)
         self.withdraw_address = QLineEdit()
         self.withdraw_address.setPlaceholderText('Cílová adresa')
-        self.withdraw_address.setFont(QFont('Segoe UI', 12))
         wd_layout.addWidget(self.withdraw_address)
         wd_btn = QPushButton('Otevřít FaucetPay Withdraw')
-        wd_btn.setStyleSheet('QPushButton { background: #dc3545; color: white; font-weight: bold; font-size: 13px; padding: 6px 14px; border-radius: 16px; } QPushButton:hover { background: #c82333; }')
+        wd_btn.setStyleSheet('''
+            QPushButton {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #dc3545, stop:1 #c82333);
+                color: white; font-weight: bold;
+                padding: 12px 24px; border-radius: 20px;
+                border: none;
+            }
+            QPushButton:hover {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #c82333, stop:1 #b02a37);
+            }
+            QPushButton:pressed {
+                background: #a71d2a;
+            }
+        ''')
         wd_btn.clicked.connect(self._do_withdraw)
         wd_layout.addWidget(wd_btn)
         right_layout.addLayout(wd_layout)
@@ -1348,11 +1545,24 @@ class SwapTab(QWidget):
         right_layout.addWidget(QLabel('-' * 30))
         self.message_label = QLabel('')
         self.message_label.setWordWrap(True)
-        self.message_label.setStyleSheet('padding: 8px; border-radius: 6px; font-weight: 600;')
+        self.message_label.setStyleSheet('padding: 8px; border-radius: 6px;')
         right_layout.addWidget(self.message_label)
 
         refresh_btn = QPushButton('Aktualizovat zůstatek')
-        refresh_btn.setStyleSheet('QPushButton { background: #6c757d; color: white; font-weight: bold; font-size: 14px; padding: 8px 16px; border-radius: 20px; } QPushButton:hover { background: #5a6268; }')
+        refresh_btn.setStyleSheet('''
+            QPushButton {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #6c757d, stop:1 #5a6268);
+                color: white; font-weight: bold;
+                padding: 15px 30px; border-radius: 25px;
+                border: none;
+            }
+            QPushButton:hover {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #5a6268, stop:1 #4e555b);
+            }
+            QPushButton:pressed {
+                background: #42484e;
+            }
+        ''')
         refresh_btn.clicked.connect(self._refresh_balance)
         right_layout.addWidget(refresh_btn)
 
@@ -1508,7 +1718,7 @@ class SwapTab(QWidget):
             'warning': '#fff3cd',
             'danger': '#f8d7da'
         }
-        self.message_label.setStyleSheet(f'background: {colors.get(level, "#cfe2ff")}; padding: 8px; border-radius: 6px; font-weight: 600; font-size: 13px;')
+        self.message_label.setStyleSheet(f'background: {colors.get(level, "#cfe2ff")}; padding: 8px; border-radius: 6px;')
         self.message_label.setText(text)
         QTimer.singleShot(10000, lambda: self.message_label.setText(''))
 
@@ -1527,16 +1737,13 @@ class PoolTab(QWidget):
         layout.setSpacing(12)
 
         left = QGroupBox('Liquidity Pool · Staking')
-        left.setStyleSheet('QGroupBox { font-weight: 700; padding: 16px; font-size: 14px; }')
+        left.setStyleSheet('QGroupBox { font-weight: bold; padding: 16px; }')
         left_layout = QVBoxLayout(left)
 
         stats_layout = QHBoxLayout()
         self.pool_tvl = QLabel('0')
-        self.pool_tvl.setFont(QFont('Segoe UI', 22, QFont.Bold))
         self.pool_user = QLabel('0')
-        self.pool_user.setFont(QFont('Segoe UI', 22, QFont.Bold))
         self.pool_reward = QLabel('0')
-        self.pool_reward.setFont(QFont('Segoe UI', 22, QFont.Bold))
 
         stats_layout.addWidget(self._stat_item('Celková likvidita', self.pool_tvl, '(HAV)'))
         stats_layout.addWidget(self._stat_item('Váš stake', self.pool_user, '(HAV)'))
@@ -1546,39 +1753,90 @@ class PoolTab(QWidget):
         left_layout.addWidget(QLabel('-' * 40))
 
         info_layout = QFormLayout()
-        info_layout.addRow(QLabel('APY:'), QLabel('7 % / 7 dní', styleSheet='font-weight: 700; color: #198754; font-size: 14px;'))
-        info_layout.addRow(QLabel('Doba uzamčení:'), QLabel('7 dní', styleSheet='font-weight: 700; font-size: 14px;'))
+        info_layout.addRow(QLabel('APY:'), QLabel('7 % / 7 dní', styleSheet='color: #198754;'))
+        info_layout.addRow(QLabel('Doba uzamčení:'), QLabel('7 dní'))
         self.status_label = QLabel('Žádný stake')
-        self.status_label.setStyleSheet('background: #6c757d; color: white; border-radius: 12px; padding: 4px 16px; font-weight: bold; font-size: 14px;')
+        self.status_label.setStyleSheet('background: #6c757d; color: white; border-radius: 12px; padding: 4px 16px;')
         info_layout.addRow(QLabel('Stav:'), self.status_label)
         self.countdown_label = QLabel('—')
-        self.countdown_label.setStyleSheet('font-family: monospace; font-weight: 700; color: #ff7e05; font-size: 15px;')
+        self.countdown_label.setStyleSheet('font-family: monospace; color: #ff7e05;')
         info_layout.addRow(QLabel('Čas do odemčení:'), self.countdown_label)
         left_layout.addLayout(info_layout)
 
         ctrl_layout = QHBoxLayout()
         self.stake_input = QLineEdit('10')
-        self.stake_input.setFixedWidth(120)
-        self.stake_input.setFont(QFont('Segoe UI', 14))
+        self.stake_input.setFixedWidth(150)
         max_btn = QPushButton('Max')
-        max_btn.setStyleSheet('QPushButton { background: #6c757d; color: white; font-weight: bold; font-size: 13px; padding: 4px 12px; border-radius: 12px; } QPushButton:hover { background: #5a6268; }')
+        max_btn.setStyleSheet('''
+            QPushButton {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #6c757d, stop:1 #5a6268);
+                color: white; font-weight: bold;
+                padding: 10px 20px; border-radius: 16px;
+                border: none;
+            }
+            QPushButton:hover {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #5a6268, stop:1 #4e555b);
+            }
+            QPushButton:pressed {
+                background: #42484e;
+            }
+        ''')
         max_btn.clicked.connect(self._set_max)
         ctrl_layout.addWidget(self.stake_input)
         ctrl_layout.addWidget(max_btn)
         left_layout.addLayout(ctrl_layout)
 
         stake_btn = QPushButton('Stake')
-        stake_btn.setStyleSheet('QPushButton { background: #198754; color: white; font-weight: bold; font-size: 14px; padding: 8px 16px; border-radius: 20px; } QPushButton:hover { background: #157347; }')
+        stake_btn.setStyleSheet('''
+            QPushButton {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #198754, stop:1 #157347);
+                color: white; font-weight: bold;
+                padding: 15px 30px; border-radius: 25px;
+                border: none;
+            }
+            QPushButton:hover {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #157347, stop:1 #146c43);
+            }
+            QPushButton:pressed {
+                background: #0f5132;
+            }
+        ''')
         stake_btn.clicked.connect(self._stake)
         left_layout.addWidget(stake_btn)
 
         unstake_btn = QPushButton('Unstake')
-        unstake_btn.setStyleSheet('QPushButton { background: #dc3545; color: white; font-weight: bold; font-size: 14px; padding: 8px 16px; border-radius: 20px; } QPushButton:hover { background: #c82333; }')
+        unstake_btn.setStyleSheet('''
+            QPushButton {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #dc3545, stop:1 #c82333);
+                color: white; font-weight: bold;
+                padding: 15px 30px; border-radius: 25px;
+                border: none;
+            }
+            QPushButton:hover {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #c82333, stop:1 #b02a37);
+            }
+            QPushButton:pressed {
+                background: #a71d2a;
+            }
+        ''')
         unstake_btn.clicked.connect(self._unstake)
         left_layout.addWidget(unstake_btn)
 
         claim_btn = QPushButton('Vybrat odměnu')
-        claim_btn.setStyleSheet('QPushButton { background: #ffc107; color: black; font-weight: bold; font-size: 14px; padding: 8px 16px; border-radius: 20px; } QPushButton:hover { background: #e0a800; }')
+        claim_btn.setStyleSheet('''
+            QPushButton {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #ffc107, stop:1 #e0a800);
+                color: black; font-weight: bold;
+                padding: 15px 30px; border-radius: 25px;
+                border: none;
+            }
+            QPushButton:hover {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #e0a800, stop:1 #c99700);
+            }
+            QPushButton:pressed {
+                background: #b88600;
+            }
+        ''')
         claim_btn.clicked.connect(self._claim)
         left_layout.addWidget(claim_btn)
 
@@ -1589,7 +1847,7 @@ class PoolTab(QWidget):
         layout.addWidget(left, 2)
 
         right = QGroupBox('Historie staků')
-        right.setStyleSheet('QGroupBox { font-weight: 700; padding: 16px; font-size: 14px; }')
+        right.setStyleSheet('QGroupBox { font-weight: bold; padding: 16px; }')
         right_layout = QVBoxLayout(right)
 
         self.stake_history_table = QTableWidget()
@@ -1597,11 +1855,9 @@ class PoolTab(QWidget):
         self.stake_history_table.setHorizontalHeaderLabels(['Čas', 'Částka', 'Typ'])
         self.stake_history_table.horizontalHeader().setStretchLastSection(True)
         self.stake_history_table.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        self.stake_history_table.setFont(QFont('Segoe UI', 12))
-        self.stake_history_table.horizontalHeader().setFont(QFont('Segoe UI', 12, QFont.Bold))
         right_layout.addWidget(self.stake_history_table)
 
-        right_layout.addWidget(QLabel('Odměna 7% po 7 dnech.', styleSheet='color: #7b8a9b; font-size: 13px; font-weight: 500;'))
+        right_layout.addWidget(QLabel('Odměna 7% po 7 dnech.', styleSheet='color: #7b8a9b;'))
 
         layout.addWidget(right, 1)
         self.refresh()
@@ -1609,10 +1865,10 @@ class PoolTab(QWidget):
     def _stat_item(self, label, value_widget, unit):
         w = QWidget()
         l = QVBoxLayout(w)
-        l.addWidget(QLabel(label, styleSheet='color: #7b8a9b; font-size: 13px; font-weight: 600;'))
+        l.addWidget(QLabel(label, styleSheet='color: #7b8a9b;'))
         hl = QHBoxLayout()
         hl.addWidget(value_widget)
-        hl.addWidget(QLabel(unit, styleSheet='color: #7b8a9b; font-size: 13px; font-weight: 600;'))
+        hl.addWidget(QLabel(unit, styleSheet='color: #7b8a9b;'))
         l.addLayout(hl)
         return w
 
@@ -1625,7 +1881,7 @@ class PoolTab(QWidget):
 
         status = state.get_pool_status()
         self.status_label.setText(status)
-        self.status_label.setStyleSheet('background: #198754; color: white; border-radius: 12px; padding: 4px 16px; font-weight: bold; font-size: 14px;' if status == 'Odemčeno' else 'background: #6c757d; color: white; border-radius: 12px; padding: 4px 16px; font-weight: bold; font-size: 14px;')
+        self.status_label.setStyleSheet('background: #198754; color: white; border-radius: 12px; padding: 4px 16px;' if status == 'Odemčeno' else 'background: #6c757d; color: white; border-radius: 12px; padding: 4px 16px;')
         self.countdown_label.setText(state.get_pool_countdown())
 
         history = pool['history']
@@ -1719,12 +1975,12 @@ class PoolTab(QWidget):
 
     def _show_message(self, text, level='info'):
         colors = {'info': '#cfe2ff', 'success': '#d1e7dd', 'warning': '#fff3cd', 'danger': '#f8d7da'}
-        self.pool_message.setStyleSheet(f'background: {colors.get(level, "#cfe2ff")}; padding: 8px; border-radius: 8px; font-weight: 600; font-size: 14px;')
+        self.pool_message.setStyleSheet(f'background: {colors.get(level, "#cfe2ff")}; padding: 8px; border-radius: 8px;')
         self.pool_message.setText(text)
         QTimer.singleShot(5000, lambda: self.pool_message.setText(''))
 
 # ============================================================
-#  TRADING TAB
+#  TRADING TAB – AUTOMATICKÁ AKTUALIZACE KAŽDÝCH 5 SEKUND
 # ============================================================
 
 class TradingTab(QWidget):
@@ -1733,22 +1989,22 @@ class TradingTab(QWidget):
         layout = QVBoxLayout(self)
         layout.setSpacing(10)
 
-        layout.addWidget(QLabel('HAV / USDT - Reálný čas', font=QFont('Segoe UI', 18, QFont.Bold)))
+        layout.addWidget(QLabel('HAV / USDT - Reálný čas'))
 
         info_layout = QHBoxLayout()
         info_layout.addWidget(QLabel('Aktuální cena:'))
         self.price_label = QLabel(f'{BASE_RATE:.12f} USDT')
-        self.price_label.setStyleSheet('font-weight: 700; font-size: 18px; color: #ff7e05;')
+        self.price_label.setStyleSheet('color: #ff7e05;')
         info_layout.addWidget(self.price_label)
         info_layout.addStretch()
         info_layout.addWidget(QLabel('Spread:'))
         self.spread_label = QLabel(f'{SPREAD*100:.0f} %')
-        self.spread_label.setStyleSheet('font-weight: 600; font-size: 14px;')
+        self.spread_label.setStyleSheet('')
         info_layout.addWidget(self.spread_label)
         info_layout.addStretch()
         info_layout.addWidget(QLabel('Poplatek:'))
         self.fee_label = QLabel(f'{TRANSACTION_FEE*100:.0f} %')
-        self.fee_label.setStyleSheet('font-weight: 600; font-size: 14px;')
+        self.fee_label.setStyleSheet('')
         info_layout.addWidget(self.fee_label)
         layout.addLayout(info_layout)
 
@@ -1756,13 +2012,12 @@ class TradingTab(QWidget):
         layout.addWidget(self.canvas)
 
         info = QLabel('Cena se pohybuje podle objemu obchodů. Nákup zvyšuje cenu, prodej snižuje.')
-        info.setStyleSheet('color: #7b8a9b; font-size: 13px; padding: 8px; font-weight: 500;')
+        info.setStyleSheet('color: #7b8a9b; padding: 8px;')
         layout.addWidget(info)
 
-        refresh_btn = QPushButton('Aktualizovat data')
-        refresh_btn.setStyleSheet('QPushButton { background: #0d6efd; color: white; font-weight: bold; font-size: 14px; padding: 8px 20px; border-radius: 20px; } QPushButton:hover { background: #0b5ed7; }')
-        refresh_btn.clicked.connect(self._refresh_data)
-        layout.addWidget(refresh_btn)
+        self.timer = QTimer()
+        self.timer.timeout.connect(self._refresh_data)
+        self.timer.start(5000)
 
         self._refresh_data()
 
@@ -1815,33 +2070,28 @@ class StatsTab(QWidget):
         layout.addLayout(card_layout)
 
         group = QGroupBox('Informace o trhu')
-        group.setStyleSheet('QGroupBox { font-weight: 700; padding: 10px; font-size: 14px; }')
+        group.setStyleSheet('QGroupBox { font-weight: bold; padding: 10px; }')
         g_layout = QVBoxLayout(group)
 
         info_grid = QGridLayout()
         info_grid.addWidget(QLabel('Střední kurz:'), 0, 0)
         self.mid_label = QLabel(f'{BASE_RATE:.12f} USDT')
-        self.mid_label.setFont(QFont('Segoe UI', 13, QFont.Bold))
         info_grid.addWidget(self.mid_label, 0, 1)
 
         info_grid.addWidget(QLabel('Nákup (ask):'), 1, 0)
         self.ask_label = QLabel(f'{BASE_RATE*(1+SPREAD):.12f} USDT')
-        self.ask_label.setFont(QFont('Segoe UI', 13, QFont.Bold))
         info_grid.addWidget(self.ask_label, 1, 1)
 
         info_grid.addWidget(QLabel('Prodej (bid):'), 2, 0)
         self.bid_label = QLabel(f'{BASE_RATE*(1-SPREAD):.12f} USDT')
-        self.bid_label.setFont(QFont('Segoe UI', 13, QFont.Bold))
         info_grid.addWidget(self.bid_label, 2, 1)
 
         info_grid.addWidget(QLabel('Spread:'), 3, 0)
         self.spread_info_label = QLabel(f'{SPREAD*100:.0f} %')
-        self.spread_info_label.setFont(QFont('Segoe UI', 13, QFont.Bold))
         info_grid.addWidget(self.spread_info_label, 3, 1)
 
         info_grid.addWidget(QLabel('Transakční poplatek:'), 4, 0)
         self.fee_info_label = QLabel(f'{TRANSACTION_FEE*100:.0f} %')
-        self.fee_info_label.setFont(QFont('Segoe UI', 13, QFont.Bold))
         info_grid.addWidget(self.fee_info_label, 4, 1)
 
         g_layout.addLayout(info_grid)
@@ -1853,9 +2103,8 @@ class StatsTab(QWidget):
         card = QFrame()
         card.setStyleSheet('QFrame { background: white; border-radius: 12px; padding: 10px 16px; border: 1px solid #e9edf4; }')
         layout = QVBoxLayout(card)
-        layout.addWidget(QLabel(title, styleSheet='color: #7b8a9b; font-size: 13px; font-weight: 600;'))
+        layout.addWidget(QLabel(title, styleSheet='color: #7b8a9b;'))
         label = QLabel(default)
-        label.setFont(QFont('Segoe UI', 22, QFont.Bold))
         layout.addWidget(label)
         card._label = label
         return card
@@ -1880,26 +2129,22 @@ class BlockchainTab(QWidget):
         super().__init__()
         layout = QVBoxLayout(self)
 
-        layout.addWidget(QLabel('Blockchain', font=QFont('Segoe UI', 18, QFont.Bold)))
+        layout.addWidget(QLabel('Blockchain'))
 
         self.block_table = QTableWidget()
         self.block_table.setColumnCount(6)
         self.block_table.setHorizontalHeaderLabels(['Výška', 'Hash', 'Těžař', 'Odměna', 'Tx', 'Čas'])
         self.block_table.horizontalHeader().setStretchLastSection(True)
         self.block_table.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        self.block_table.setFont(QFont('Segoe UI', 12))
-        self.block_table.horizontalHeader().setFont(QFont('Segoe UI', 12, QFont.Bold))
         layout.addWidget(self.block_table)
 
         info_layout = QHBoxLayout()
         info_layout.addWidget(QLabel('Obtížnost:'))
         self.diff_label = QLabel('0.50')
-        self.diff_label.setFont(QFont('Segoe UI', 13, QFont.Bold))
         info_layout.addWidget(self.diff_label)
         info_layout.addStretch()
         info_layout.addWidget(QLabel('Bloků:'))
         self.blocks_label = QLabel('0')
-        self.blocks_label.setFont(QFont('Segoe UI', 13, QFont.Bold))
         info_layout.addWidget(self.blocks_label)
         layout.addLayout(info_layout)
 
@@ -1997,20 +2242,24 @@ class FlaskServerThread(QThread):
 def main():
     app = QApplication(sys.argv)
     app.setStyle('Fusion')
-    app.setFont(QFont('Segoe UI', 11, QFont.Normal))
 
+    # Globální styl – veškerý text 2× větší a tučný (28 bodů)
     app.setStyleSheet('''
+        * { font-size: 28px; font-weight: bold; }
         QMainWindow { background: #f0f4fa; }
         QGroupBox { border: 1px solid #e9edf4; border-radius: 12px; background: white; margin-top: 8px; }
-        QGroupBox::title { subcontrol-origin: margin; left: 12px; padding: 0 8px; font-weight: 700; font-size: 14px; }
-        QPushButton { border-radius: 20px; padding: 8px 18px; font-weight: 700; font-size: 14px; }
+        QGroupBox::title { subcontrol-origin: margin; left: 12px; padding: 0 8px; font-weight: bold; font-size: 28px; }
+        QPushButton { border-radius: 20px; padding: 15px 30px; font-weight: bold; font-size: 28px; }
         QPushButton:hover { background: #e9edf4; }
-        QTableWidget { border: none; background: white; border-radius: 8px; gridline-color: #e9edf4; font-size: 13px; }
-        QTableWidget::item { padding: 6px; }
-        QHeaderView::section { background: #f8faff; padding: 6px; border: none; font-weight: 700; font-size: 13px; }
-        QLineEdit, QSpinBox, QDoubleSpinBox { border: 1px solid #d1d9e6; border-radius: 8px; padding: 6px 10px; background: white; font-size: 13px; }
+        QTableWidget { border: none; background: white; border-radius: 8px; gridline-color: #e9edf4; font-size: 28px; }
+        QTableWidget::item { padding: 10px; }
+        QHeaderView::section { background: #f8faff; padding: 10px; border: none; font-weight: bold; font-size: 28px; }
+        QLineEdit, QSpinBox, QDoubleSpinBox { border: 1px solid #d1d9e6; border-radius: 8px; padding: 10px 15px; background: white; font-size: 28px; }
         QLineEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus { border-color: #ff7e05; }
-        QLabel { font-size: 13px; }
+        QLabel { font-size: 28px; font-weight: bold; }
+        QTabBar::tab { padding: 15px 30px; border-radius: 20px; font-weight: bold; font-size: 28px; }
+        QTabBar::tab:selected { background: #ff7e05; color: white; }
+        QTabBar::tab:hover { background: #e9edf4; }
     ''')
 
     flask_thread = FlaskServerThread()
