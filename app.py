@@ -6,9 +6,13 @@ import re
 import requests
 import socket
 import threading
+import webbrowser
+import json
+import tempfile
 from datetime import datetime
 from collections import deque
 from queue import Queue, Empty
+from pathlib import Path
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QTabWidget, QLabel, QPushButton, QLineEdit, QTableWidget,
@@ -43,12 +47,10 @@ FAUCETPAY_API_URL = "https://faucetpay.io/api/v1"
 BASE_RATE = 1e-12
 SPREAD = 0.05
 TRANSACTION_FEE = 0.03
-
-# SATOSHI přepočet (1 USDT = 10^8 satoshi)
-SATOSHI = 100000000
+STATE_FILE = "havirov_state.json"
 
 # ============================================================
-#  FAUCETPAY API FUNKCE (OPRAVENÉ)
+#  FAUCETPAY API FUNKCE
 # ============================================================
 
 def faucetpay_get_balance():
@@ -63,66 +65,192 @@ def faucetpay_get_balance():
             data = response.json()
             if data.get("status") == 200:
                 balance_satoshi = int(data.get("balance", 0))
-                return balance_satoshi / SATOSHI
+                return balance_satoshi / 100000000
         return 0.0
     except Exception as e:
         print(f"Chyba při získávání zůstatku: {e}")
         return 0.0
 
 def faucetpay_deposit(amount_usdt):
-    """
-    Získá deposit adresu pro USDT – uživatel si ji musí najít v dashboardu.
-    Vrací (úspěch, zpráva).
-    """
-    message = (
-        f"Pro vklad {amount_usdt:.8f} USDT postupujte takto:\n\n"
-        f"1. Přihlaste se na https://faucetpay.io\n"
-        f"2. Přejděte do Dashboard → Deposit\n"
-        f"3. Vyberte měnu USDT\n"
-        f"4. Zkopírujte zobrazenou deposit adresu\n"
-        f"5. Pošlete na ni požadovanou částku\n\n"
-        f"Po odeslání platby klikněte na 'Aktualizovat zůstatek' pro načtení nového zůstatku."
-    )
-    return True, message
+    """Otevře FaucetPay Merchant formulář pro deposit."""
+    html_content = f'''
+    <html>
+    <head>
+        <meta charset="UTF-8">
+        <title>FaucetPay Deposit</title>
+        <style>
+            body {{ font-family: Arial, sans-serif; text-align: center; padding: 50px; }}
+            .container {{ max-width: 600px; margin: 0 auto; }}
+            .info {{ background: #f0f8ff; padding: 20px; border-radius: 10px; margin-bottom: 20px; }}
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h1>FaucetPay Deposit</h1>
+            <div class="info">
+                <p>Částka k vkladu: <strong>{amount_usdt:.8f} USDT</strong></p>
+                <p>Účet: <strong>{FAUCETPAY_MERCHANT_ID}</strong></p>
+            </div>
+            <form id="depositForm" action="https://faucetpay.io/merchant/webscr" method="post">
+                <input type="hidden" name="merchant_username" value="{FAUCETPAY_MERCHANT_ID}">
+                <input type="hidden" name="item_description" value="Deposit USDT to Havirov Coin">
+                <input type="hidden" name="amount1" value="{amount_usdt:.8f}">
+                <input type="hidden" name="currency1" value="USDT">
+                <input type="hidden" name="currency2" value="">
+                <input type="hidden" name="custom" value="deposit_{int(time.time())}">
+                <input type="hidden" name="callback_url" value="http://localhost:9999/callback">
+                <input type="hidden" name="success_url" value="http://localhost:9999/success">
+                <input type="hidden" name="cancel_url" value="http://localhost:9999/cancel">
+                <input type="submit" value="Pokračovat na FaucetPay" style="
+                    background: #ff7e05; color: white; border: none;
+                    padding: 15px 30px; font-size: 18px; border-radius: 25px;
+                    cursor: pointer; font-weight: bold;
+                ">
+            </form>
+            <p style="margin-top: 20px; color: #666;">Pokud nejste přesměrováni, klikněte na tlačítko.</p>
+            <p style="color: #999; font-size: 12px;">Po dokončení platby klikněte v aplikaci na "Aktualizovat zůstatek".</p>
+        </div>
+        <script>
+            // Automatické odeslání formuláře po načtení stránky
+            setTimeout(function() {{
+                document.getElementById('depositForm').submit();
+            }}, 1000);
+        </script>
+    </body>
+    </html>
+    '''
+    fd, path = tempfile.mkstemp(suffix='.html', prefix='faucetpay_deposit_')
+    with os.fdopen(fd, 'w', encoding='utf-8') as f:
+        f.write(html_content)
+    webbrowser.open('file://' + path)
+    return True, f"Otevřen formulář pro vklad {amount_usdt:.8f} USDT.\nPo dokončení platby klikněte na 'Aktualizovat zůstatek'."
 
 def faucetpay_withdraw(amount_usdt, to_address):
-    """
-    Provede výběr USDT na zadanou adresu přes FaucetPay API.
-    Vrací (úspěch, zpráva).
-    """
-    if amount_usdt > state.usdt_balance:
-        return False, "Nedostatek USDT na účtě."
-
-    amount_satoshi = int(amount_usdt * SATOSHI)
-
-    try:
-        response = requests.post(
-            f"{FAUCETPAY_API_URL}/send",
-            data={
-                "api_key": FAUCETPAY_API_KEY,
-                "currency": "USDT",
-                "amount": str(amount_satoshi),
-                "to": to_address
-            },
-            timeout=10
-        )
-        if response.status_code == 200:
-            data = response.json()
-            if data.get("status") == 200:
-                state.usdt_balance -= amount_usdt
-                return True, f"Výběr {amount_usdt:.8f} USDT na adresu {to_address} byl úspěšně odeslán."
-            else:
-                return False, f"Chyba API: {data.get('message', 'Neznámá chyba')}"
-        else:
-            return False, f"HTTP chyba: {response.status_code} - {response.text}"
-    except Exception as e:
-        return False, f"Chyba při výběru: {str(e)}"
+    """Otevře FaucetPay Merchant formulář pro výběr."""
+    html_content = f'''
+    <html>
+    <head>
+        <meta charset="UTF-8">
+        <title>FaucetPay Withdraw</title>
+        <style>
+            body {{ font-family: Arial, sans-serif; text-align: center; padding: 50px; }}
+            .container {{ max-width: 600px; margin: 0 auto; }}
+            .info {{ background: #f0f8ff; padding: 20px; border-radius: 10px; margin-bottom: 20px; }}
+            .address {{ background: #eef2f7; padding: 10px; border-radius: 8px; font-family: monospace; }}
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h1>FaucetPay Withdraw</h1>
+            <div class="info">
+                <p>Částka k výběru: <strong>{amount_usdt:.8f} USDT</strong></p>
+                <p>Cílová adresa: <br><span class="address">{to_address}</span></p>
+                <p>Účet: <strong>{FAUCETPAY_MERCHANT_ID}</strong></p>
+            </div>
+            <form id="withdrawForm" action="https://faucetpay.io/merchant/webscr" method="post">
+                <input type="hidden" name="merchant_username" value="{FAUCETPAY_MERCHANT_ID}">
+                <input type="hidden" name="item_description" value="Withdraw USDT from Havirov Coin">
+                <input type="hidden" name="amount1" value="{amount_usdt:.8f}">
+                <input type="hidden" name="currency1" value="USDT">
+                <input type="hidden" name="currency2" value="">
+                <input type="hidden" name="custom" value="withdraw_{int(time.time())}">
+                <input type="hidden" name="callback_url" value="http://localhost:9999/callback">
+                <input type="hidden" name="success_url" value="http://localhost:9999/success">
+                <input type="hidden" name="cancel_url" value="http://localhost:9999/cancel">
+                <input type="submit" value="Pokračovat na FaucetPay" style="
+                    background: #ff7e05; color: white; border: none;
+                    padding: 15px 30px; font-size: 18px; border-radius: 25px;
+                    cursor: pointer; font-weight: bold;
+                ">
+            </form>
+            <p style="margin-top: 20px; color: #666;">Pokud nejste přesměrováni, klikněte na tlačítko.</p>
+            <p style="color: #999; font-size: 12px;">Po dokončení platby klikněte v aplikaci na "Aktualizovat zůstatek".</p>
+        </div>
+        <script>
+            setTimeout(function() {{
+                document.getElementById('withdrawForm').submit();
+            }}, 1000);
+        </script>
+    </body>
+    </html>
+    '''
+    fd, path = tempfile.mkstemp(suffix='.html', prefix='faucetpay_withdraw_')
+    with os.fdopen(fd, 'w', encoding='utf-8') as f:
+        f.write(html_content)
+    webbrowser.open('file://' + path)
+    return True, f"Otevřen formulář pro výběr {amount_usdt:.8f} USDT.\nPo dokončení platby klikněte na 'Aktualizovat zůstatek'."
 
 def faucetpay_get_buy_rate():
     return BASE_RATE * (1 + SPREAD)
 
 def faucetpay_get_sell_rate():
     return BASE_RATE * (1 - SPREAD)
+
+# ============================================================
+#  UKLÁDÁNÍ A NAČÍTÁNÍ STAVU
+# ============================================================
+
+def save_state():
+    """Uloží aktuální stav aplikace do JSON souboru."""
+    data = {
+        'wallet_balance': state.wallet_balance,
+        'total_supply': state.total_supply,
+        'block_height': state.block_height,
+        'difficulty': state.difficulty,
+        'block_reward': state.block_reward,
+        'transactions': state.transactions,
+        'wallet_address': state.wallet_address,
+        'reward_distribution': state.reward_distribution,
+        'usdt_balance': state.usdt_balance,
+        'pool': state.pool,
+        'price_history': list(state.price_history),
+        'blockchain': state.blockchain,
+        'devices': [{'name': d['name'], 'port': d.get('port', 'N/A'), 'connected': d['connected']} 
+                    for d in state.devices if d.get('connected')]
+    }
+    try:
+        # Uložíme do dočasného souboru a pak přejmenujeme pro atomičnost
+        tmp_file = STATE_FILE + '.tmp'
+        with open(tmp_file, 'w', encoding='utf-8') as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+        os.replace(tmp_file, STATE_FILE)
+    except Exception as e:
+        print(f"Chyba při ukládání stavu: {e}")
+
+def load_state():
+    """Načte stav aplikace z JSON souboru."""
+    if not os.path.exists(STATE_FILE):
+        return
+    try:
+        with open(STATE_FILE, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        state.wallet_balance = data.get('wallet_balance', 0.0)
+        state.total_supply = data.get('total_supply', 0.0)
+        state.block_height = data.get('block_height', 0)
+        state.difficulty = data.get('difficulty', 0.5)
+        state.block_reward = data.get('block_reward', 1.0)
+        state.transactions = data.get('transactions', [])
+        state.wallet_address = data.get('wallet_address', state._gen_address())
+        state.reward_distribution = data.get('reward_distribution', {})
+        state.usdt_balance = data.get('usdt_balance', 0.0)
+        state.pool = data.get('pool', state.pool)
+        state.price_history = deque(data.get('price_history', [BASE_RATE]*50), maxlen=50)
+        state.blockchain = data.get('blockchain', [])
+        # Obnovíme zařízení (jen informace, připojení se řeší znovu)
+        devices_data = data.get('devices', [])
+        for dev_info in devices_data:
+            existing = next((d for d in state.devices if d['name'] == dev_info['name']), None)
+            if not existing:
+                state.devices.append({
+                    'name': dev_info['name'],
+                    'port': dev_info.get('port', 'N/A'),
+                    'connected': False,  # neobnovujeme připojení
+                    'thread': None,
+                    'network': dev_info.get('port', '').startswith('tcp:')
+                })
+        print(f"Stav načten: {state.block_height} bloků, {state.wallet_balance:.2f} HAV")
+    except Exception as e:
+        print(f"Chyba při načítání stavu: {e}")
 
 # ============================================================
 #  STAV APLIKACE
@@ -291,6 +419,8 @@ class MiningCore(QThread):
                 if len(state.transactions) > 20:
                     state.transactions.pop()
 
+            # Uložíme stav po každém novém bloku
+            save_state()
             self.new_block.emit(block)
             self.new_transaction.emit(tx)
 
@@ -371,6 +501,7 @@ class TcpServer(QThread):
                     })
                 else:
                     existing['connected'] = True
+                save_state()
 
             while self._running:
                 line = conn.recv(4096).decode('utf-8', errors='ignore').strip()
@@ -388,6 +519,7 @@ class TcpServer(QThread):
                     dev = next((d for d in state.devices if d['name'] == device_name), None)
                     if dev:
                         dev['connected'] = False
+                    save_state()
                 self.client_disconnected.emit(device_name)
                 self.devices_changed.emit()
             try:
@@ -404,6 +536,9 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle('Havirov Coin - Ostrá verze')
         self.setMinimumSize(1200, 800)
+
+        # Načtení uloženého stavu
+        load_state()
 
         self.mining_core = MiningCore()
         self.mining_core.new_block.connect(self._on_new_block)
@@ -485,16 +620,19 @@ class MainWindow(QMainWindow):
 
     def _on_new_transaction(self, tx):
         self.tab_wallet.refresh()
+        save_state()
 
     def _on_devices_changed(self):
         self.tab_mining.refresh_device_table()
         self.tab_dashboard.refresh()
+        save_state()
 
     def _on_tcp_data(self, device_name, line):
         self.mining_core.enqueue_data(device_name, line)
         self.tab_mining.add_raw_line(device_name, line)
 
     def closeEvent(self, event):
+        save_state()
         self.mining_core.stop()
         self.tcp_server.stop()
         for dev in state.devices:
@@ -783,6 +921,7 @@ class MiningTab(QWidget):
 
         self.main_window.mining_core.devices_changed.emit()
         self.refresh_device_table()
+        save_state()
         QMessageBox.information(self, 'Připojeno', f'Zařízení {device_name} bylo připojeno.')
 
     def _serial_error(self, error, device):
@@ -793,6 +932,7 @@ class MiningTab(QWidget):
             device['thread'] = None
         self.main_window.mining_core.devices_changed.emit()
         self.refresh_device_table()
+        save_state()
 
     def _disconnect_all(self):
         for dev in state.devices:
@@ -806,6 +946,7 @@ class MiningTab(QWidget):
         self.refresh_device_table()
         if self.main_window:
             self.main_window.tab_dashboard.refresh()
+        save_state()
 
     def refresh_device_table(self):
         active = [d for d in state.devices if d['connected']]
@@ -941,6 +1082,7 @@ class WalletTab(QWidget):
         self.address_label.setText(state.wallet_address)
         self.copy_feedback.setText('Nová adresa vytvořena')
         QTimer.singleShot(3000, lambda: self.copy_feedback.setText(''))
+        save_state()
 
     def _show_send_dialog(self):
         dialog = SendDialog(self)
@@ -955,6 +1097,7 @@ class WalletTab(QWidget):
                                               'time': datetime.now().strftime('%H:%M:%S')})
                 if len(state.transactions) > 20:
                     state.transactions.pop()
+                save_state()
                 self.refresh()
 
 class SendDialog(QDialog):
@@ -1067,12 +1210,12 @@ class SwapTab(QWidget):
         self.balance_label.setStyleSheet('font-weight: 700; color: #0d6efd; font-size: 14px;')
         left_layout.addWidget(self.balance_label)
 
-        swap_btn = QPushButton('🔁 Swap HAV → USDT (prodej)')
+        swap_btn = QPushButton('Swap HAV → USDT (prodej)')
         swap_btn.setStyleSheet('QPushButton { background: #ff7e05; color: white; font-weight: bold; font-size: 14px; padding: 8px 16px; border-radius: 20px; } QPushButton:hover { background: #e66e00; }')
         swap_btn.clicked.connect(self._do_sell)
         left_layout.addWidget(swap_btn)
 
-        buy_btn = QPushButton('🔁 Swap USDT → HAV (nákup)')
+        buy_btn = QPushButton('Swap USDT → HAV (nákup)')
         buy_btn.setStyleSheet('QPushButton { background: #198754; color: white; font-weight: bold; font-size: 14px; padding: 8px 16px; border-radius: 20px; } QPushButton:hover { background: #157347; }')
         buy_btn.clicked.connect(self._do_buy)
         left_layout.addWidget(buy_btn)
@@ -1088,18 +1231,20 @@ class SwapTab(QWidget):
 
         right_layout.addWidget(QLabel('-' * 30))
 
+        # Deposit
         right_layout.addWidget(QLabel('Vklad (Deposit)', font=QFont('Segoe UI', 12, QFont.Bold)))
         dep_layout = QHBoxLayout()
         self.deposit_input = QLineEdit()
         self.deposit_input.setPlaceholderText('Množství USDT')
         self.deposit_input.setFont(QFont('Segoe UI', 12))
         dep_layout.addWidget(self.deposit_input)
-        dep_btn = QPushButton('Získat adresu')
+        dep_btn = QPushButton('Otevřít FaucetPay Deposit')
         dep_btn.setStyleSheet('QPushButton { background: #0d6efd; color: white; font-weight: bold; font-size: 13px; padding: 6px 14px; border-radius: 16px; } QPushButton:hover { background: #0b5ed7; }')
         dep_btn.clicked.connect(self._do_deposit)
         dep_layout.addWidget(dep_btn)
         right_layout.addLayout(dep_layout)
 
+        # Withdraw
         right_layout.addWidget(QLabel('Výběr (Withdraw)', font=QFont('Segoe UI', 12, QFont.Bold)))
         wd_layout = QHBoxLayout()
         self.withdraw_input = QLineEdit()
@@ -1110,7 +1255,7 @@ class SwapTab(QWidget):
         self.withdraw_address.setPlaceholderText('Cílová adresa')
         self.withdraw_address.setFont(QFont('Segoe UI', 12))
         wd_layout.addWidget(self.withdraw_address)
-        wd_btn = QPushButton('Odeslat výběr')
+        wd_btn = QPushButton('Otevřít FaucetPay Withdraw')
         wd_btn.setStyleSheet('QPushButton { background: #dc3545; color: white; font-weight: bold; font-size: 13px; padding: 6px 14px; border-radius: 16px; } QPushButton:hover { background: #c82333; }')
         wd_btn.clicked.connect(self._do_withdraw)
         wd_layout.addWidget(wd_btn)
@@ -1152,6 +1297,7 @@ class SwapTab(QWidget):
         balance = faucetpay_get_balance()
         state.usdt_balance = balance
         self.balance_label.setText(f'FaucetPay USDT zůstatek: {balance:.8f}')
+        save_state()
 
     def _do_sell(self):
         try:
@@ -1183,6 +1329,7 @@ class SwapTab(QWidget):
             if len(state.transactions) > 20:
                 state.transactions.pop()
 
+            save_state()
             self._show_message(
                 f'Prodej {amt} HAV za {usdt_final:.12f} USDT (poplatek {usdt_raw-usdt_final:.12f} USDT)',
                 'success'
@@ -1224,6 +1371,7 @@ class SwapTab(QWidget):
             if len(state.transactions) > 20:
                 state.transactions.pop()
 
+            save_state()
             self._show_message(
                 f'Nákup {amt} HAV za {usdt_with_fee:.12f} USDT (poplatek {usdt_with_fee-usdt_needed:.12f} USDT)',
                 'success'
@@ -1238,7 +1386,7 @@ class SwapTab(QWidget):
         try:
             amount = float(self.deposit_input.text() or 0)
             if amount <= 0:
-                self._show_message('Zadejte kladnou částku.', 'warning')
+                self._show_message('Zadejte kladnou částku pro vklad.', 'warning')
                 return
 
             success, msg = faucetpay_deposit(amount)
@@ -1253,7 +1401,7 @@ class SwapTab(QWidget):
         try:
             amount = float(self.withdraw_input.text() or 0)
             if amount <= 0:
-                self._show_message('Zadejte kladnou částku.', 'warning')
+                self._show_message('Zadejte kladnou částku pro výběr.', 'warning')
                 return
 
             to_addr = self.withdraw_address.text().strip()
@@ -1264,7 +1412,6 @@ class SwapTab(QWidget):
             success, msg = faucetpay_withdraw(amount, to_addr)
             if success:
                 self._show_message(msg, 'success')
-                self._refresh_balance()
             else:
                 self._show_message(msg, 'danger')
         except ValueError:
@@ -1279,7 +1426,7 @@ class SwapTab(QWidget):
         }
         self.message_label.setStyleSheet(f'background: {colors.get(level, "#cfe2ff")}; padding: 8px; border-radius: 6px; font-weight: 600; font-size: 13px;')
         self.message_label.setText(text)
-        QTimer.singleShot(8000, lambda: self.message_label.setText(''))
+        QTimer.singleShot(10000, lambda: self.message_label.setText(''))
 
     def refresh(self):
         self._update_swap()
@@ -1438,6 +1585,7 @@ class PoolTab(QWidget):
         if len(state.transactions) > 20:
             state.transactions.pop()
 
+        save_state()
         self._show_message(f'Stake {amount} HAV vložen.', 'success')
         self.refresh()
 
@@ -1462,6 +1610,7 @@ class PoolTab(QWidget):
         if len(state.transactions) > 20:
             state.transactions.pop()
 
+        save_state()
         self._show_message(f'Vybráno {total:.2f} HAV (vč. odměny {reward:.2f}).', 'success')
         self.refresh()
 
@@ -1480,6 +1629,7 @@ class PoolTab(QWidget):
         if len(state.transactions) > 20:
             state.transactions.pop()
 
+        save_state()
         self._show_message(f'Odměna {reward:.2f} HAV přičtena.', 'success')
         self.refresh()
 
