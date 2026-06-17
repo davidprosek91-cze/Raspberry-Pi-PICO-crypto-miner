@@ -1,3 +1,9 @@
+#!/usr/bin/env python3
+"""
+Havirov Coin – Kompletní aplikace (GUI + server + miner)
+Opravená verze s robustním TCP serverem, synchronizací a detailními chybovými hláškami.
+"""
+
 import sys
 import os
 import random
@@ -9,6 +15,9 @@ import threading
 import webbrowser
 import json
 import tempfile
+import select
+import errno
+import traceback
 from datetime import datetime
 from collections import deque
 from queue import Queue, Empty
@@ -56,7 +65,6 @@ STATE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "havirov_s
 # ============================================================
 
 def faucetpay_get_balance():
-    """Získá aktuální zůstatek USDT z FaucetPay."""
     try:
         response = requests.post(
             f"{FAUCETPAY_API_URL}/balance",
@@ -74,52 +82,33 @@ def faucetpay_get_balance():
         return 0.0
 
 def faucetpay_deposit(amount_usdt):
-    """Otevře FaucetPay Merchant formulář pro deposit."""
     html_content = f'''
     <html>
-    <head>
-        <meta charset="UTF-8">
-        <title>FaucetPay Deposit</title>
-        <style>
-            body {{ font-family: Arial, sans-serif; text-align: center; padding: 50px; }}
-            .container {{ max-width: 600px; margin: 0 auto; }}
-            .info {{ background: #f0f8ff; padding: 20px; border-radius: 10px; margin-bottom: 20px; }}
-        </style>
-    </head>
-    <body>
-        <div class="container">
-            <h1>FaucetPay Deposit</h1>
-            <div class="info">
-                <p>Částka k vkladu: <strong>{amount_usdt:.8f} USDT</strong></p>
-                <p>Účet: <strong>{FAUCETPAY_MERCHANT_ID}</strong></p>
-            </div>
-            <form id="depositForm" action="https://faucetpay.io/merchant/webscr" method="post">
-                <input type="hidden" name="merchant_username" value="{FAUCETPAY_MERCHANT_ID}">
-                <input type="hidden" name="item_description" value="Deposit USDT to Havirov Coin">
-                <input type="hidden" name="amount1" value="{amount_usdt:.8f}">
-                <input type="hidden" name="currency1" value="USDT">
-                <input type="hidden" name="currency2" value="">
-                <input type="hidden" name="custom" value="deposit_{int(time.time())}">
-                <input type="hidden" name="callback_url" value="http://localhost:9999/callback">
-                <input type="hidden" name="success_url" value="http://localhost:9999/success">
-                <input type="hidden" name="cancel_url" value="http://localhost:9999/cancel">
-                <input type="submit" value="Pokračovat na FaucetPay" style="
-                    background: #ff7e05; color: white; border: none;
-                    padding: 15px 30px; font-size: 18px; border-radius: 25px;
-                    cursor: pointer; font-weight: bold;
-                ">
-            </form>
-            <p style="margin-top: 20px; color: #666;">Pokud nejste přesměrováni, klikněte na tlačítko.</p>
-            <p style="color: #999; font-size: 12px;">Po dokončení platby klikněte v aplikaci na "Aktualizovat zůstatek".</p>
-        </div>
-        <script>
-            // Automatické odeslání formuláře po načtení stránky
-            setTimeout(function() {{
-                document.getElementById('depositForm').submit();
-            }}, 1000);
-        </script>
-    </body>
-    </html>
+    <head><meta charset="UTF-8"><title>FaucetPay Deposit</title>
+    <style>body{{font-family:Arial;text-align:center;padding:50px;}}
+    .container{{max-width:600px;margin:0 auto;}}
+    .info{{background:#f0f8ff;padding:20px;border-radius:10px;margin-bottom:20px;}}
+    </style></head>
+    <body><div class="container"><h1>FaucetPay Deposit</h1>
+    <div class="info"><p>Částka k vkladu: <strong>{amount_usdt:.8f} USDT</strong></p>
+    <p>Účet: <strong>{FAUCETPAY_MERCHANT_ID}</strong></p></div>
+    <form id="depositForm" action="https://faucetpay.io/merchant/webscr" method="post">
+    <input type="hidden" name="merchant_username" value="{FAUCETPAY_MERCHANT_ID}">
+    <input type="hidden" name="item_description" value="Deposit USDT to Havirov Coin">
+    <input type="hidden" name="amount1" value="{amount_usdt:.8f}">
+    <input type="hidden" name="currency1" value="USDT">
+    <input type="hidden" name="currency2" value="">
+    <input type="hidden" name="custom" value="deposit_{int(time.time())}">
+    <input type="hidden" name="callback_url" value="http://localhost:9999/callback">
+    <input type="hidden" name="success_url" value="http://localhost:9999/success">
+    <input type="hidden" name="cancel_url" value="http://localhost:9999/cancel">
+    <input type="submit" value="Pokračovat na FaucetPay" style="background:#ff7e05;color:white;border:none;padding:15px 30px;font-size:18px;border-radius:25px;cursor:pointer;font-weight:bold;">
+    </form>
+    <p style="margin-top:20px;color:#666;">Pokud nejste přesměrováni, klikněte na tlačítko.</p>
+    <p style="color:#999;font-size:12px;">Po dokončení platby klikněte v aplikaci na "Aktualizovat zůstatek".</p>
+    </div>
+    <script>setTimeout(function(){{document.getElementById('depositForm').submit();}},1000);</script>
+    </body></html>
     '''
     fd, path = tempfile.mkstemp(suffix='.html', prefix='faucetpay_deposit_')
     with os.fdopen(fd, 'w', encoding='utf-8') as f:
@@ -128,53 +117,35 @@ def faucetpay_deposit(amount_usdt):
     return True, f"Otevřen formulář pro vklad {amount_usdt:.8f} USDT.\nPo dokončení platby klikněte na 'Aktualizovat zůstatek'."
 
 def faucetpay_withdraw(amount_usdt, to_address):
-    """Otevře FaucetPay Merchant formulář pro výběr."""
     html_content = f'''
     <html>
-    <head>
-        <meta charset="UTF-8">
-        <title>FaucetPay Withdraw</title>
-        <style>
-            body {{ font-family: Arial, sans-serif; text-align: center; padding: 50px; }}
-            .container {{ max-width: 600px; margin: 0 auto; }}
-            .info {{ background: #f0f8ff; padding: 20px; border-radius: 10px; margin-bottom: 20px; }}
-            .address {{ background: #eef2f7; padding: 10px; border-radius: 8px; font-family: monospace; }}
-        </style>
-    </head>
-    <body>
-        <div class="container">
-            <h1>FaucetPay Withdraw</h1>
-            <div class="info">
-                <p>Částka k výběru: <strong>{amount_usdt:.8f} USDT</strong></p>
-                <p>Cílová adresa: <br><span class="address">{to_address}</span></p>
-                <p>Účet: <strong>{FAUCETPAY_MERCHANT_ID}</strong></p>
-            </div>
-            <form id="withdrawForm" action="https://faucetpay.io/merchant/webscr" method="post">
-                <input type="hidden" name="merchant_username" value="{FAUCETPAY_MERCHANT_ID}">
-                <input type="hidden" name="item_description" value="Withdraw USDT from Havirov Coin">
-                <input type="hidden" name="amount1" value="{amount_usdt:.8f}">
-                <input type="hidden" name="currency1" value="USDT">
-                <input type="hidden" name="currency2" value="">
-                <input type="hidden" name="custom" value="withdraw_{int(time.time())}">
-                <input type="hidden" name="callback_url" value="http://localhost:9999/callback">
-                <input type="hidden" name="success_url" value="http://localhost:9999/success">
-                <input type="hidden" name="cancel_url" value="http://localhost:9999/cancel">
-                <input type="submit" value="Pokračovat na FaucetPay" style="
-                    background: #ff7e05; color: white; border: none;
-                    padding: 15px 30px; font-size: 18px; border-radius: 25px;
-                    cursor: pointer; font-weight: bold;
-                ">
-            </form>
-            <p style="margin-top: 20px; color: #666;">Pokud nejste přesměrováni, klikněte na tlačítko.</p>
-            <p style="color: #999; font-size: 12px;">Po dokončení platby klikněte v aplikaci na "Aktualizovat zůstatek".</p>
-        </div>
-        <script>
-            setTimeout(function() {{
-                document.getElementById('withdrawForm').submit();
-            }}, 1000);
-        </script>
-    </body>
-    </html>
+    <head><meta charset="UTF-8"><title>FaucetPay Withdraw</title>
+    <style>body{{font-family:Arial;text-align:center;padding:50px;}}
+    .container{{max-width:600px;margin:0 auto;}}
+    .info{{background:#f0f8ff;padding:20px;border-radius:10px;margin-bottom:20px;}}
+    .address{{background:#eef2f7;padding:10px;border-radius:8px;font-family:monospace;}}
+    </style></head>
+    <body><div class="container"><h1>FaucetPay Withdraw</h1>
+    <div class="info"><p>Částka k výběru: <strong>{amount_usdt:.8f} USDT</strong></p>
+    <p>Cílová adresa: <br><span class="address">{to_address}</span></p>
+    <p>Účet: <strong>{FAUCETPAY_MERCHANT_ID}</strong></p></div>
+    <form id="withdrawForm" action="https://faucetpay.io/merchant/webscr" method="post">
+    <input type="hidden" name="merchant_username" value="{FAUCETPAY_MERCHANT_ID}">
+    <input type="hidden" name="item_description" value="Withdraw USDT from Havirov Coin">
+    <input type="hidden" name="amount1" value="{amount_usdt:.8f}">
+    <input type="hidden" name="currency1" value="USDT">
+    <input type="hidden" name="currency2" value="">
+    <input type="hidden" name="custom" value="withdraw_{int(time.time())}">
+    <input type="hidden" name="callback_url" value="http://localhost:9999/callback">
+    <input type="hidden" name="success_url" value="http://localhost:9999/success">
+    <input type="hidden" name="cancel_url" value="http://localhost:9999/cancel">
+    <input type="submit" value="Pokračovat na FaucetPay" style="background:#ff7e05;color:white;border:none;padding:15px 30px;font-size:18px;border-radius:25px;cursor:pointer;font-weight:bold;">
+    </form>
+    <p style="margin-top:20px;color:#666;">Pokud nejste přesměrováni, klikněte na tlačítko.</p>
+    <p style="color:#999;font-size:12px;">Po dokončení platby klikněte v aplikaci na "Aktualizovat zůstatek".</p>
+    </div>
+    <script>setTimeout(function(){{document.getElementById('withdrawForm').submit();}},1000);</script>
+    </body></html>
     '''
     fd, path = tempfile.mkstemp(suffix='.html', prefix='faucetpay_withdraw_')
     with os.fdopen(fd, 'w', encoding='utf-8') as f:
@@ -193,7 +164,6 @@ def faucetpay_get_sell_rate():
 # ============================================================
 
 def save_state():
-    """Uloží aktuální stav aplikace do JSON souboru s file lockingem pro synchronizaci uživatelů."""
     data = {
         'wallet_balance': state.wallet_balance,
         'total_supply': state.total_supply,
@@ -222,7 +192,6 @@ def save_state():
         print(f"Chyba při ukládání stavu: {e}")
 
 def load_state():
-    """Načte stav aplikace z JSON souboru s file lockingem."""
     if not os.path.exists(STATE_FILE):
         return
     try:
@@ -242,7 +211,6 @@ def load_state():
         state.pool = data.get('pool', state.pool)
         state.price_history = deque(data.get('price_history', [BASE_RATE]*50), maxlen=50)
         state.blockchain = data.get('blockchain', [])
-        # Obnovíme zařízení (jen informace, připojení se řeší znovu)
         devices_data = data.get('devices', [])
         for dev_info in devices_data:
             existing = next((d for d in state.devices if d['name'] == dev_info['name']), None)
@@ -250,7 +218,7 @@ def load_state():
                 state.devices.append({
                     'name': dev_info['name'],
                     'port': dev_info.get('port', 'N/A'),
-                    'connected': False,  # neobnovujeme připojení
+                    'connected': False,
                     'thread': None,
                     'network': dev_info.get('port', '').startswith('tcp:')
                 })
@@ -425,13 +393,12 @@ class MiningCore(QThread):
                 if len(state.transactions) > 20:
                     state.transactions.pop()
 
-            # Uložíme stav po každém novém bloku
             save_state()
             self.new_block.emit(block)
             self.new_transaction.emit(tx)
 
 # ============================================================
-#  TCP SERVER PRO PŘÍJEM DAT Z MINERŮ
+#  TCP SERVER PRO PŘÍJEM DAT Z MINERŮ (OPRAVENÝ)
 # ============================================================
 
 class TcpServer(QThread):
@@ -445,7 +412,8 @@ class TcpServer(QThread):
         self.host = host
         self.port = port
         self._running = True
-        self._clients = {}
+        self._clients = {}          # socket -> device_name
+        self._client_sockets = []   # pro select
         self._lock = threading.Lock()
         self.server_socket = None
 
@@ -464,74 +432,206 @@ class TcpServer(QThread):
         try:
             self.server_socket.bind((self.host, self.port))
             self.server_socket.listen(10)
-            self.server_socket.settimeout(1.0)
+            self.server_socket.setblocking(False)  # neblokující pro select
+            print(f"[TCP] Server naslouchá na {self.host}:{self.port}")
+
             while self._running:
+                # Použijeme select pro čtení i nové spojení
+                rlist = [self.server_socket] + self._client_sockets
                 try:
-                    conn, addr = self.server_socket.accept()
-                    if self._running:
-                        client_thread = threading.Thread(target=self._handle_client, args=(conn, addr))
-                        client_thread.daemon = True
-                        client_thread.start()
-                except socket.timeout:
-                    continue
+                    readable, _, _ = select.select(rlist, [], [], 1.0)
                 except Exception as e:
-                    print(f"Chyba v TCP serveru: {e}")
+                    if self._running:
+                        print(f"[TCP] Chyba select: {e}")
+                    continue
+
+                for sock in readable:
+                    if sock is self.server_socket:
+                        # Nový klient
+                        try:
+                            conn, addr = self.server_socket.accept()
+                            conn.setblocking(False)
+                            with self._lock:
+                                self._client_sockets.append(conn)
+                                self._clients[conn] = None  # zatím neznámé jméno
+                            # Spustíme vlákno pro čtení od tohoto klienta
+                            thread = threading.Thread(target=self._handle_client, args=(conn, addr))
+                            thread.daemon = True
+                            thread.start()
+                        except Exception as e:
+                            print(f"[TCP] Chyba při accept: {e}")
+                    else:
+                        # Data od existujícího klienta – čteme neblokujícím způsobem
+                        try:
+                            data = sock.recv(4096)
+                            if not data:
+                                self._close_client(sock)
+                                continue
+                            # Zpracování dat (může obsahovat více řádků)
+                            lines = data.decode('utf-8', errors='ignore').splitlines()
+                            for line in lines:
+                                line = line.strip()
+                                if line:
+                                    with self._lock:
+                                        device_name = self._clients.get(sock, 'Neznámý')
+                                    if device_name:
+                                        self.data_received.emit(device_name, line)
+                                    else:
+                                        # Pokud ještě nebylo nastaveno jméno, zkusíme ho získat
+                                        if line.startswith('DEVICE:'):
+                                            device_name = line.split(':', 1)[1].strip()
+                                            with self._lock:
+                                                self._clients[sock] = device_name
+                                            self.client_connected.emit(device_name)
+                                            self.devices_changed.emit()
+                                            # Uložíme do stavu
+                                            with state._lock:
+                                                existing = next((d for d in state.devices if d['name'] == device_name), None)
+                                                if not existing:
+                                                    state.devices.append({
+                                                        'name': device_name,
+                                                        'port': f'tcp:{addr[0]}:{addr[1]}',
+                                                        'connected': True,
+                                                        'thread': None,
+                                                        'network': True
+                                                    })
+                                                else:
+                                                    existing['connected'] = True
+                                                save_state()
+                        except socket.error as e:
+                            error_code = e.errno if hasattr(e, 'errno') else None
+                            if error_code in (errno.ECONNRESET, errno.EPIPE):
+                                print(f"[TCP] Klient {sock.getpeername()} resetoval spojení (ECONNRESET)")
+                            elif error_code == errno.ETIMEDOUT:
+                                print(f"[TCP] Timeout u klienta {sock.getpeername()}")
+                            else:
+                                print(f"[TCP] Chyba při čtení od {sock.getpeername()}: kód {error_code} – {e}")
+                            self._close_client(sock)
         except Exception as e:
-            print(f"Chyba při naslouchání na portu {self.port}: {e}")
+            print(f"[TCP] Chyba v hlavní smyčce: {e}")
+            traceback.print_exc()
         finally:
             if self.server_socket:
                 self.server_socket.close()
 
     def _handle_client(self, conn, addr):
-        device_name = None
-        try:
-            data = conn.recv(1024).decode('utf-8', errors='ignore').strip()
-            if data.startswith('DEVICE:'):
-                device_name = data.split(':', 1)[1].strip()
-            else:
-                device_name = f'Miner-{addr[0]}-{addr[1]}'
+        """Vlákno pro zpracování klienta (používáme ho pro identifikaci a odesílání)."""
+        # V této verzi nepotřebujeme samostatné vlákno, protože čteme v hlavním selectu.
+        # Tato metoda je volána, ale jen pro inicializaci (např. odeslání historie).
+        # Počkáme, až se klient identifikuje, pak mu pošleme aktuální stav.
+        while self._running:
+            time.sleep(0.1)
             with self._lock:
-                self._clients[conn] = device_name
-            self.client_connected.emit(device_name)
-            self.devices_changed.emit()
+                device_name = self._clients.get(conn)
+                if device_name:
+                    # Odešleme mu aktuální stavy
+                    self._send_current_state(conn, device_name)
+                    break
+        # Vlákno skončí – dál se čte v hlavním selectu.
 
+    def _send_current_state(self, conn, device_name):
+        """Pošle klientovi všechny aktuální hodnoty zařízení."""
+        with state._lock:
+            for dev, val in state.device_data.items():
+                if dev != device_name:
+                    try:
+                        conn.sendall(f"STATE: {dev}: {val}\n".encode('utf-8'))
+                    except Exception as e:
+                        print(f"[TCP] Chyba při odesílání stavu: {e}")
+                        break
+
+    def _close_client(self, sock):
+        with self._lock:
+            if sock in self._client_sockets:
+                self._client_sockets.remove(sock)
+            device_name = self._clients.pop(sock, None)
+        try:
+            sock.close()
+        except:
+            pass
+        if device_name:
+            self.client_disconnected.emit(device_name)
+            self.devices_changed.emit()
             with state._lock:
-                existing = next((d for d in state.devices if d['name'] == device_name), None)
-                if not existing:
-                    state.devices.append({
-                        'name': device_name,
-                        'port': f'tcp:{addr[0]}:{addr[1]}',
-                        'connected': True,
-                        'thread': None,
-                        'network': True
-                    })
-                else:
-                    existing['connected'] = True
+                dev = next((d for d in state.devices if d['name'] == device_name), None)
+                if dev:
+                    dev['connected'] = False
                 save_state()
 
-            while self._running:
-                line = conn.recv(4096).decode('utf-8', errors='ignore').strip()
-                if not line:
-                    break
-                if line:
-                    self.data_received.emit(device_name, line)
-        except Exception as e:
-            print(f"Chyba u klienta {addr}: {e}")
-        finally:
-            with self._lock:
-                self._clients.pop(conn, None)
-            if device_name:
-                with state._lock:
-                    dev = next((d for d in state.devices if d['name'] == device_name), None)
-                    if dev:
-                        dev['connected'] = False
-                    save_state()
-                self.client_disconnected.emit(device_name)
-                self.devices_changed.emit()
+    def send_to_all(self, msg, exclude=None):
+        """Odešle zprávu všem klientům kromě exclude."""
+        with self._lock:
+            for sock, name in self._clients.items():
+                if name and name != exclude:
+                    try:
+                        sock.sendall((msg + '\n').encode('utf-8'))
+                    except:
+                        pass
+
+    def broadcast_device_data(self, device_name, value, sender=None):
+        """Rozešle aktualizaci všem klientům kromě odesílatele."""
+        msg = f"UPDATE: {device_name}: {value}"
+        self.send_to_all(msg, exclude=sender)
+
+# Přidáme do stavu dictionary pro poslední hodnoty zařízení
+state.device_data = {}
+
+# ============================================================
+#  SÉRIOVÝ READER (OPRAVENÝ)
+# ============================================================
+
+class SerialReaderThread(QThread):
+    error_occurred = pyqtSignal(str)
+    data_received = pyqtSignal(str, str)  # device_name, line
+
+    def __init__(self, port, baudrate=115200, device_name=None, core=None):
+        super().__init__()
+        self.port = port
+        self.baudrate = baudrate
+        self.device_name = device_name or port
+        self._running = True
+        self.ser = None
+        self.core = core
+
+    def run(self):
+        while self._running:
             try:
-                conn.close()
+                self.ser = serial.Serial(self.port, self.baudrate, timeout=1)
+                print(f"[SER] Připojeno k {self.port} jako {self.device_name}")
+                while self._running:
+                    if self.ser.in_waiting:
+                        line = self.ser.readline().decode('utf-8', errors='ignore').strip()
+                        if line:
+                            if self.core:
+                                self.core.enqueue_data(self.device_name, line)
+                            self.data_received.emit(self.device_name, line)
+                    else:
+                        time.sleep(0.01)
+            except serial.SerialException as e:
+                print(f"[SER] Chyba sériového portu {self.port}: {e}")
+                self.error_occurred.emit(str(e))
+                # Počkáme a zkusíme znovu
+                time.sleep(5)
+            except Exception as e:
+                print(f"[SER] Neočekávaná chyba: {e}")
+                self.error_occurred.emit(str(e))
+                time.sleep(5)
+        # Ukončení
+        if self.ser and self.ser.is_open:
+            try:
+                self.ser.close()
             except:
                 pass
+        print(f"[SER] Reader pro {self.device_name} ukončen.")
+
+    def stop(self):
+        self._running = False
+        if self.ser and self.ser.is_open:
+            try:
+                self.ser.close()
+            except:
+                pass
+        self.wait()
 
 # ============================================================
 #  HLAVNÍ OKNO
@@ -543,7 +643,6 @@ class MainWindow(QMainWindow):
         self.setWindowTitle('Havirov Coin - Ostrá verze')
         self.setMinimumSize(1200, 800)
 
-        # Načtení uloženého stavu
         load_state()
 
         self.mining_core = MiningCore()
@@ -555,6 +654,8 @@ class MainWindow(QMainWindow):
         self.tcp_server = TcpServer(host='0.0.0.0', port=9998)
         self.tcp_server.data_received.connect(self._on_tcp_data)
         self.tcp_server.devices_changed.connect(self._on_devices_changed)
+        self.tcp_server.client_connected.connect(self._on_client_connected)
+        self.tcp_server.client_disconnected.connect(self._on_client_disconnected)
         self.tcp_server.start()
 
         central = QWidget()
@@ -634,8 +735,19 @@ class MainWindow(QMainWindow):
         save_state()
 
     def _on_tcp_data(self, device_name, line):
+        # Uložíme poslední hodnotu zařízení
+        with state._lock:
+            state.device_data[device_name] = line
+        # Rozešleme ostatním klientům
+        self.tcp_server.broadcast_device_data(device_name, line, sender=device_name)
         self.mining_core.enqueue_data(device_name, line)
         self.tab_mining.add_raw_line(device_name, line)
+
+    def _on_client_connected(self, device_name):
+        self._on_devices_changed()
+
+    def _on_client_disconnected(self, device_name):
+        self._on_devices_changed()
 
     def closeEvent(self, event):
         save_state()
@@ -784,48 +896,6 @@ class DashboardTab(QWidget):
 #  MINING TAB
 # ============================================================
 
-class SerialReaderThread(QThread):
-    error_occurred = pyqtSignal(str)
-
-    def __init__(self, port, baudrate=115200, device_name=None, core=None):
-        super().__init__()
-        self.port = port
-        self.baudrate = baudrate
-        self.device_name = device_name or port
-        self._running = True
-        self.ser = None
-        self.core = core
-
-    def run(self):
-        try:
-            self.ser = serial.Serial(self.port, self.baudrate, timeout=1)
-            while self._running:
-                if self.ser.in_waiting:
-                    line = self.ser.readline().decode('utf-8', errors='ignore').strip()
-                    if line and self.core:
-                        self.core.enqueue_data(self.device_name, line)
-                else:
-                    time.sleep(0.01)
-        except Exception as e:
-            self.error_occurred.emit(str(e))
-        finally:
-            if self.ser and self.ser.is_open:
-                try:
-                    self.ser.close()
-                except Exception:
-                    pass
-            self.ser = None
-
-    def stop(self):
-        self._running = False
-        if self.ser and self.ser.is_open:
-            try:
-                self.ser.close()
-            except Exception:
-                pass
-        self.ser = None
-        self.wait()
-
 class MiningTab(QWidget):
     def __init__(self, main_window):
         super().__init__()
@@ -921,6 +991,7 @@ class MiningTab(QWidget):
 
         thread = SerialReaderThread(device_name, 115200, dev['name'], self.main_window.mining_core)
         thread.error_occurred.connect(lambda err: self._serial_error(err, dev))
+        thread.data_received.connect(self._on_serial_data)
         thread.start()
         dev['thread'] = thread
         self.reader_threads.append(thread)
@@ -929,6 +1000,15 @@ class MiningTab(QWidget):
         self.refresh_device_table()
         save_state()
         QMessageBox.information(self, 'Připojeno', f'Zařízení {device_name} bylo připojeno.')
+
+    def _on_serial_data(self, device_name, line):
+        # Uložíme poslední hodnotu a rozešleme
+        with state._lock:
+            state.device_data[device_name] = line
+        # Rozešleme TCP klientům
+        if self.main_window:
+            self.main_window.tcp_server.broadcast_device_data(device_name, line, sender=None)
+        self.add_raw_line(device_name, line)
 
     def _serial_error(self, error, device):
         QMessageBox.warning(self, 'Chyba sériového portu', f'Chyba na zařízení {device["port"]}: {error}')
@@ -1237,7 +1317,6 @@ class SwapTab(QWidget):
 
         right_layout.addWidget(QLabel('-' * 30))
 
-        # Deposit
         right_layout.addWidget(QLabel('Vklad (Deposit)', font=QFont('Segoe UI', 12, QFont.Bold)))
         dep_layout = QHBoxLayout()
         self.deposit_input = QLineEdit()
@@ -1250,7 +1329,6 @@ class SwapTab(QWidget):
         dep_layout.addWidget(dep_btn)
         right_layout.addLayout(dep_layout)
 
-        # Withdraw
         right_layout.addWidget(QLabel('Výběr (Withdraw)', font=QFont('Segoe UI', 12, QFont.Bold)))
         wd_layout = QHBoxLayout()
         self.withdraw_input = QLineEdit()
@@ -1854,7 +1932,6 @@ flask_app = Flask(__name__)
 
 @flask_app.route('/callback', methods=['POST'])
 def faucetpay_callback_route():
-    """Přijímá callbacky z FaucetPay po dokončení platby."""
     data = request.form.to_dict()
     print(f"📩 FaucetPay callback: {data}")
     status = data.get('status', '')
@@ -1901,7 +1978,6 @@ def index():
 <p>Flask server běží. Čekám na callbacky z FaucetPay...</p></body></html>'''
 
 class FlaskServerThread(QThread):
-    """Spouští Flask server v samostatném vlákně."""
     def __init__(self, host='0.0.0.0', port=FLASK_CALLBACK_PORT):
         super().__init__()
         self.host = host
