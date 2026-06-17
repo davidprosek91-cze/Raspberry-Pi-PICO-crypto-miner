@@ -31,7 +31,7 @@ from PyQt5.QtWidgets import (
     QTabWidget, QLabel, QPushButton, QLineEdit, QTableWidget,
     QTableWidgetItem, QGridLayout, QFrame, QScrollArea, QGroupBox,
     QFormLayout, QMessageBox, QHeaderView, QSizePolicy,
-    QInputDialog, QDialog, QTextEdit
+    QInputDialog, QDialog, QTextEdit, QSplitter, QComboBox
 )
 from PyQt5.QtCore import Qt, QTimer, QThread, pyqtSignal, QSize, QObject, QUrl
 from PyQt5.QtGui import QFont
@@ -200,7 +200,10 @@ def save_state():
         'price_history': list(state.price_history),
         'blockchain': state.blockchain,
         'devices': [{'name': d['name'], 'port': d.get('port', 'N/A'), 'connected': d['connected']} 
-                    for d in state.devices if d.get('connected')]
+                    for d in state.devices if d.get('connected')],
+        'positions': state.positions,
+        'trade_history': state.trade_history,
+        'leverage': state.leverage
     }
     try:
         tmp_file = STATE_FILE + '.tmp'
@@ -244,7 +247,10 @@ def load_state():
                     'thread': None,
                     'network': dev_info.get('port', '').startswith('tcp:')
                 })
-        print(f"Stav načten: {state.block_height} bloků, {state.wallet_balance:.2f} HAV")
+        state.positions = data.get('positions', [])
+        state.trade_history = data.get('trade_history', [])
+        state.leverage = data.get('leverage', 1)
+        print(f"Stav načten: {state.block_height} bloků, {state.wallet_balance:.2f} HAV, USDT: {state.usdt_balance:.2f}")
     except Exception as e:
         print(f"Chyba při načítání stavu: {e}")
 
@@ -280,6 +286,11 @@ class HavirovState:
         self.price_history = deque(maxlen=50)
         for _ in range(50):
             self.price_history.append(BASE_RATE)
+
+        # Trading vlastnosti – používáme USDT z účtu FaucetPay
+        self.positions = []          # otevřené pozice
+        self.trade_history = []      # historie obchodů
+        self.leverage = 1            # páka
 
         self._lock = threading.Lock()
 
@@ -1817,73 +1828,628 @@ class PoolTab(QWidget):
         QTimer.singleShot(5000, lambda: self.pool_message.setText(''))
 
 # ============================================================
-#  TRADING TAB
+#  TRADING CHART CANVAS (svíčkový graf + objem)
+# ============================================================
+
+class TradingChartCanvas(FigureCanvas):
+    def __init__(self, parent=None):
+        self.fig = Figure(figsize=(12, 7), dpi=100, facecolor='#131722')
+        self.ax_price = self.fig.add_subplot(2, 1, 1, facecolor='#131722')
+        self.ax_volume = self.fig.add_subplot(2, 1, 2, facecolor='#131722', sharex=self.ax_price)
+        self.ax_volume.set_facecolor('#131722')
+        self.ax_price.tick_params(colors='#787b86')
+        self.ax_volume.tick_params(colors='#787b86')
+        self.fig.subplots_adjust(hspace=0.05)
+        super().__init__(self.fig)
+        self.setParent(parent)
+
+
+# ============================================================
+#  TRADING TAB – plnohodnotné obchodování s pozicemi (burza)
+#  Využívá USDT z FaucetPay (state.usdt_balance)
 # ============================================================
 
 class TradingTab(QWidget):
     def __init__(self):
         super().__init__()
-        layout = QVBoxLayout(self)
-        layout.setSpacing(10)
+        # Data pro graf
+        self.price_points = []
+        self.current_timeframe = '1m'
+        self.timeframes = ['1m', '5m', '15m', '1h', '4h', '1d']
+        self.last_price = None
 
-        layout.addWidget(QLabel('HAV / USDT - Reálný čas'))
+        self.init_ui()
+        self._load_initial_prices()
+        self.update_chart()
 
-        info_layout = QHBoxLayout()
-        info_layout.addWidget(QLabel('Aktuální cena:'))
-        self.price_label = QLabel(f'{BASE_RATE:.12f} USDT')
-        self.price_label.setStyleSheet('color: #ff7e05;')
-        info_layout.addWidget(self.price_label)
-        info_layout.addStretch()
-        info_layout.addWidget(QLabel('Spread:'))
-        self.spread_label = QLabel(f'{SPREAD*100:.0f} %')
-        self.spread_label.setStyleSheet('')
-        info_layout.addWidget(self.spread_label)
-        info_layout.addStretch()
-        info_layout.addWidget(QLabel('Poplatek:'))
-        self.fee_label = QLabel(f'{TRANSACTION_FEE*100:.0f} %')
-        self.fee_label.setStyleSheet('')
-        info_layout.addWidget(self.fee_label)
-        layout.addLayout(info_layout)
-
-        self.canvas = MplCanvas(self, width=8, height=5)
-        layout.addWidget(self.canvas)
-
-        info = QLabel('Cena se pohybuje podle objemu obchodů. Nákup zvyšuje cenu, prodej snižuje.')
-        info.setStyleSheet('color: #7b8a9b; padding: 8px;')
-        layout.addWidget(info)
-
+        # Timery
         self.timer = QTimer()
-        self.timer.timeout.connect(self._refresh_data)
-        self.timer.start(5000)
+        self.timer.timeout.connect(self.update)
+        self.timer.start(1000)
 
-        self._refresh_data()
+        self.pos_timer = QTimer()
+        self.pos_timer.timeout.connect(self._update_positions)
+        self.pos_timer.start(2000)
 
-    def _refresh_data(self):
-        balance = faucetpay_get_balance()
-        state.usdt_balance = balance
+        self._update_positions()
+        self._update_trade_history()
 
-        if state.price_history:
-            current_price = state.price_history[-1]
-            self.price_label.setText(f'{current_price:.12f} USDT')
+    def init_ui(self):
+        main_layout = QVBoxLayout(self)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(0)
 
-        self._draw_chart()
+        # Horní lišta
+        top_frame = QFrame()
+        top_frame.setStyleSheet('background: #1e222d; padding: 8px 16px;')
+        top_layout = QHBoxLayout(top_frame)
+        top_layout.setSpacing(20)
 
-    def _draw_chart(self):
-        data = list(state.price_history)
-        if len(data) < 2:
-            data = [BASE_RATE] * 50
+        self.price_label = QLabel('0.000000000000')
+        self.price_label.setStyleSheet('color: #d1d4dc; font-size: 34px; font-weight: bold;')
 
-        self.canvas.ax.clear()
-        self.canvas.ax.plot(data, color='#ff7e05', linewidth=2)
-        self.canvas.ax.fill_between(range(len(data)), data, color='#ff7e05', alpha=0.15)
+        self.change_label = QLabel('+0.00%')
+        self.change_label.setStyleSheet('color: #26a69a; font-size: 28px;')
 
-        buy_prices = [d * (1 + SPREAD) for d in data]
-        sell_prices = [d * (1 - SPREAD) for d in data]
-        self.canvas.ax.fill_between(range(len(data)), sell_prices, buy_prices, color='#0d6efd', alpha=0.08)
+        self.czk_label = QLabel('CZK: 0.00')
+        self.czk_label.setStyleSheet('color: #d1d4dc; font-size: 28px; font-weight: bold;')
 
-        self.canvas.ax.grid(True, color='#e9edf4', linestyle='-', linewidth=0.5)
-        self.canvas.ax.set_ylabel('USDT')
-        self.canvas.ax.set_title('Vývoj ceny HAV/USDT (stínovaná oblast = spread)')
+        self.balance_label = QLabel('Zůstatek USDT: 0.00')
+        self.balance_label.setStyleSheet('color: #f8b82e; font-size: 28px; font-weight: bold;')
+
+        self.equity_label = QLabel('Equity: 0.00 USDT')
+        self.equity_label.setStyleSheet('color: #d1d4dc; font-size: 24px;')
+
+        top_layout.addWidget(self.price_label)
+        top_layout.addWidget(self.change_label)
+        top_layout.addWidget(self.czk_label)
+        top_layout.addStretch()
+        top_layout.addWidget(self.balance_label)
+        top_layout.addWidget(self.equity_label)
+
+        main_layout.addWidget(top_frame)
+
+        # Hlavní splitter – graf vlevo, obchodní panel + tabulky vpravo
+        splitter = QSplitter(Qt.Horizontal)
+
+        # Levý panel – graf + toolbar
+        left_widget = QWidget()
+        left_layout = QVBoxLayout(left_widget)
+        left_layout.setContentsMargins(0, 0, 0, 0)
+        left_layout.setSpacing(0)
+
+        toolbar = QFrame()
+        toolbar.setStyleSheet('background: #1e222d; padding: 4px 8px;')
+        toolbar_layout = QHBoxLayout(toolbar)
+        toolbar_layout.setSpacing(4)
+
+        self.timeframe_buttons = []
+        for tf in self.timeframes:
+            btn = QPushButton(tf)
+            btn.setStyleSheet('''
+                QPushButton {
+                    background: transparent;
+                    color: #787b86;
+                    border: none;
+                    padding: 6px 14px;
+                    font-size: 22px;
+                    font-weight: bold;
+                }
+                QPushButton:hover { color: #d1d4dc; }
+                QPushButton:checked {
+                    color: #d1d4dc;
+                    border-bottom: 3px solid #f8b82e;
+                }
+            ''')
+            btn.setCheckable(True)
+            btn.clicked.connect(lambda checked, t=tf: self.set_timeframe(t))
+            toolbar_layout.addWidget(btn)
+            self.timeframe_buttons.append(btn)
+        self.timeframe_buttons[0].setChecked(True)
+
+        toolbar_layout.addStretch()
+        left_layout.addWidget(toolbar)
+
+        self.canvas = TradingChartCanvas(self)
+        left_layout.addWidget(self.canvas)
+
+        splitter.addWidget(left_widget)
+
+        # Pravý panel – obchodování
+        right_widget = QWidget()
+        right_widget.setStyleSheet('background: #1e222d;')
+        right_layout = QVBoxLayout(right_widget)
+        right_layout.setContentsMargins(4, 4, 4, 4)
+        right_layout.setSpacing(4)
+
+        # --- Obchodní panel ---
+        trade_group = QGroupBox('Nový obchod')
+        trade_group.setStyleSheet('''
+            QGroupBox { 
+                color: #d1d4dc; 
+                border: 1px solid #2a2e39; 
+                border-radius: 8px; 
+                margin-top: 8px;
+                padding-top: 8px;
+                font-weight: bold;
+                font-size: 24px;
+            }
+            QGroupBox::title { subcontrol-origin: margin; left: 8px; padding: 0 4px; }
+        ''')
+        trade_layout = QFormLayout(trade_group)
+        trade_layout.setSpacing(4)
+
+        # Množství (v HAV)
+        self.amount_input = QLineEdit('1.0')
+        self.amount_input.setStyleSheet('background: #2a2e39; color: #d1d4dc; border: none; padding: 6px; border-radius: 4px;')
+        trade_layout.addRow(QLabel('Množství (HAV):', styleSheet='color: #787b86; font-size: 22px;'), self.amount_input)
+
+        # Cena (limit / market)
+        cena_layout = QHBoxLayout()
+        self.price_type_combo = QComboBox()
+        self.price_type_combo.addItems(['Market', 'Limit'])
+        self.price_type_combo.setStyleSheet('background: #2a2e39; color: #d1d4dc; border: none; padding: 4px; border-radius: 4px;')
+        cena_layout.addWidget(self.price_type_combo)
+
+        self.limit_price_input = QLineEdit()
+        self.limit_price_input.setPlaceholderText('Cena USDT')
+        self.limit_price_input.setStyleSheet('background: #2a2e39; color: #d1d4dc; border: none; padding: 6px; border-radius: 4px;')
+        self.limit_price_input.setVisible(False)
+        cena_layout.addWidget(self.limit_price_input)
+
+        self.price_type_combo.currentIndexChanged.connect(
+            lambda i: self.limit_price_input.setVisible(i == 1)
+        )
+        trade_layout.addRow(QLabel('Cena:', styleSheet='color: #787b86; font-size: 22px;'), cena_layout)
+
+        # Páka
+        leverage_layout = QHBoxLayout()
+        self.leverage_combo = QComboBox()
+        self.leverage_combo.addItems(['1x', '2x', '5x', '10x'])
+        self.leverage_combo.setStyleSheet('background: #2a2e39; color: #d1d4dc; border: none; padding: 4px; border-radius: 4px;')
+        self.leverage_combo.currentIndexChanged.connect(self._on_leverage_change)
+        leverage_layout.addWidget(self.leverage_combo)
+        leverage_layout.addStretch()
+        trade_layout.addRow(QLabel('Páka:', styleSheet='color: #787b86; font-size: 22px;'), leverage_layout)
+
+        # Tlačítka Buy / Sell
+        btn_layout = QHBoxLayout()
+        self.buy_btn = QPushButton('🟢 BUY (LONG)')
+        self.buy_btn.setStyleSheet('''
+            QPushButton {
+                background: #26a69a; 
+                color: white; 
+                font-weight: bold;
+                padding: 10px; 
+                border: none; 
+                border-radius: 6px;
+                font-size: 24px;
+            }
+            QPushButton:hover { background: #2bbdae; }
+            QPushButton:pressed { background: #1a8c7e; }
+        ''')
+        self.buy_btn.clicked.connect(lambda: self._open_position('long'))
+
+        self.sell_btn = QPushButton('🔴 SELL (SHORT)')
+        self.sell_btn.setStyleSheet('''
+            QPushButton {
+                background: #ef5350; 
+                color: white; 
+                font-weight: bold;
+                padding: 10px; 
+                border: none; 
+                border-radius: 6px;
+                font-size: 24px;
+            }
+            QPushButton:hover { background: #f0625c; }
+            QPushButton:pressed { background: #c62828; }
+        ''')
+        self.sell_btn.clicked.connect(lambda: self._open_position('short'))
+
+        btn_layout.addWidget(self.buy_btn)
+        btn_layout.addWidget(self.sell_btn)
+        trade_layout.addRow(btn_layout)
+
+        right_layout.addWidget(trade_group)
+
+        # --- Otevřené pozice ---
+        pos_group = QGroupBox('Otevřené pozice')
+        pos_group.setStyleSheet(trade_group.styleSheet())
+        pos_layout = QVBoxLayout(pos_group)
+
+        self.positions_table = QTableWidget()
+        self.positions_table.setColumnCount(7)
+        self.positions_table.setHorizontalHeaderLabels(['Směr', 'Vstup', 'Aktuální', 'Množství', 'Margin', 'PnL', 'Zavřít'])
+        self.positions_table.horizontalHeader().setStretchLastSection(True)
+        self.positions_table.setStyleSheet('''
+            QTableWidget {
+                background: #131722;
+                color: #d1d4dc;
+                border: none;
+                font-size: 20px;
+                gridline-color: #2a2e39;
+            }
+            QTableWidget::item { padding: 4px; }
+        ''')
+        self.positions_table.setFixedHeight(180)
+        pos_layout.addWidget(self.positions_table)
+        right_layout.addWidget(pos_group)
+
+        # --- Historie obchodů ---
+        hist_group = QGroupBox('Historie obchodů')
+        hist_group.setStyleSheet(trade_group.styleSheet())
+        hist_layout = QVBoxLayout(hist_group)
+
+        self.history_table = QTableWidget()
+        self.history_table.setColumnCount(6)
+        self.history_table.setHorizontalHeaderLabels(['Čas', 'Směr', 'Cena', 'Množství', 'PnL', 'Status'])
+        self.history_table.horizontalHeader().setStretchLastSection(True)
+        self.history_table.setStyleSheet('''
+            QTableWidget {
+                background: #131722;
+                color: #d1d4dc;
+                border: none;
+                font-size: 20px;
+                gridline-color: #2a2e39;
+            }
+            QTableWidget::item { padding: 4px; }
+        ''')
+        self.history_table.setFixedHeight(150)
+        hist_layout.addWidget(self.history_table)
+        right_layout.addWidget(hist_group)
+
+        splitter.addWidget(right_widget)
+        splitter.setSizes([700, 400])
+
+        main_layout.addWidget(splitter)
+
+        self.update_header()
+
+    # ---------- Data pro graf ----------
+    def _load_initial_prices(self):
+        hist = list(state.price_history)
+        if not hist:
+            hist = [BASE_RATE]
+        now = time.time()
+        for i, price in enumerate(hist):
+            ts = now - (len(hist) - i) * 1.0
+            self.price_points.append((ts, price))
+        self.last_price = hist[-1] if hist else BASE_RATE
+
+    def _check_new_price(self):
+        if not state.price_history:
+            return
+        current = state.price_history[-1]
+        if current != self.last_price:
+            self.price_points.append((time.time(), current))
+            self.last_price = current
+            if len(self.price_points) > 10000:
+                self.price_points = self.price_points[-10000:]
+
+    def get_candles(self, timeframe):
+        if len(self.price_points) < 2:
+            return []
+        mapping = {'1m': 60, '5m': 300, '15m': 900, '1h': 3600, '4h': 14400, '1d': 86400}
+        interval = mapping.get(timeframe, 60)
+        candles = []
+        points = sorted(self.price_points, key=lambda x: x[0])
+        start_time = points[0][0]
+        end_time = points[-1][0]
+        current_start = start_time
+        while current_start <= end_time:
+            current_end = current_start + interval
+            segment = [p for p in points if current_start <= p[0] < current_end]
+            if len(segment) >= 2:
+                o = segment[0][1]
+                c = segment[-1][1]
+                h = max(p[1] for p in segment)
+                l = min(p[1] for p in segment)
+                v = len(segment)
+                candles.append({'t': current_start, 'o': o, 'h': h, 'l': l, 'c': c, 'v': v})
+            current_start = current_end
+        return candles
+
+    @staticmethod
+    def sma(data, window):
+        if len(data) < window:
+            return []
+        return [sum(data[i-window:i]) / window for i in range(window, len(data)+1)]
+
+    def set_timeframe(self, tf):
+        for btn in self.timeframe_buttons:
+            btn.setChecked(btn.text() == tf)
+        self.current_timeframe = tf
+        self.update_chart()
+
+    # ---------- Pravidelná aktualizace ----------
+    def update(self):
+        self._check_new_price()
+        self.update_header()
+        if self.last_price != getattr(self, '_last_rendered_price', None):
+            self.update_chart()
+            self._last_rendered_price = self.last_price
+        if not hasattr(self, '_counter'):
+            self._counter = 0
+        self._counter += 1
+        if self._counter % 10 == 0:
+            self.update_chart()
+
+    def update_header(self):
+        if not self.price_points:
+            return
+        prices = [p[1] for p in self.price_points]
+        current = prices[-1]
+        self.price_label.setText(f'{current:.12f}')
+
+        if len(prices) > 1:
+            first = prices[0]
+            last = prices[-1]
+            change = (last - first) / first * 100 if first != 0 else 0
+            self.change_label.setText(f'{change:+.2f}%')
+            self.change_label.setStyleSheet(
+                'color: #26a69a;' if change >= 0 else 'color: #ef5350;'
+            )
+
+        # CZK
+        czk = current * CZK_RATE
+        self.czk_label.setText(f'CZK: {czk:.6f}')
+
+        # Zůstatek a equity – používáme state.usdt_balance
+        balance = state.usdt_balance
+        self.balance_label.setText(f'Zůstatek USDT: {balance:.2f}')
+
+        total_pnl = sum(p.get('pnl', 0.0) for p in state.positions if not p.get('closed', False))
+        equity = balance + total_pnl
+        self.equity_label.setText(f'Equity: {equity:.2f} USDT')
+
+    # ---------- Páka ----------
+    def _on_leverage_change(self, idx):
+        values = [1, 2, 5, 10]
+        state.leverage = values[idx]
+        save_state()
+
+    # ---------- Otevírání pozic ----------
+    def _open_position(self, direction):
+        try:
+            amount = float(self.amount_input.text())
+        except ValueError:
+            QMessageBox.warning(self, 'Chyba', 'Zadejte platné množství HAV.')
+            return
+        if amount <= 0:
+            QMessageBox.warning(self, 'Chyba', 'Množství musí být kladné.')
+            return
+
+        # Aktuální cena (market)
+        current_price = self.last_price if self.last_price else BASE_RATE
+
+        # Limit cena
+        if self.price_type_combo.currentIndex() == 1:  # Limit
+            try:
+                limit_price = float(self.limit_price_input.text())
+            except ValueError:
+                QMessageBox.warning(self, 'Chyba', 'Zadejte platnou limitní cenu.')
+                return
+            if limit_price <= 0:
+                QMessageBox.warning(self, 'Chyba', 'Limitní cena musí být kladná.')
+                return
+            entry_price = limit_price
+        else:
+            entry_price = current_price
+
+        # Výpočet marginu
+        leverage = state.leverage
+        position_value = amount * entry_price
+        margin = position_value / leverage
+
+        # Kontrola zůstatku – používáme state.usdt_balance
+        if margin > state.usdt_balance:
+            QMessageBox.warning(self, 'Chyba', f'Nedostatečný zůstatek USDT. Potřebujete {margin:.2f} USDT (máte {state.usdt_balance:.2f}).')
+            return
+
+        # Odebrat margin ze zůstatku
+        state.usdt_balance -= margin
+
+        # Vytvořit pozici
+        position = {
+            'id': int(time.time() * 1000),
+            'direction': direction,
+            'entry_price': entry_price,
+            'amount': amount,
+            'margin': margin,
+            'leverage': leverage,
+            'open_time': time.time(),
+            'pnl': 0.0,
+            'closed': False
+        }
+        state.positions.append(position)
+        save_state()
+
+        # Záznam do historie
+        state.trade_history.append({
+            'time': time.time(),
+            'direction': direction,
+            'price': entry_price,
+            'amount': amount,
+            'pnl': 0.0,
+            'status': 'Otevřeno'
+        })
+        save_state()
+
+        QMessageBox.information(self, 'Obchod', f'{direction.upper()} pozice otevřena na {entry_price:.12f} USDT, množství {amount} HAV, páka {leverage}x')
+        self._update_positions()
+        self._update_trade_history()
+        self.update_header()
+
+    # ---------- Zavírání pozic ----------
+    def _close_position(self, pos_id):
+        current_price = self.last_price if self.last_price else BASE_RATE
+        pos = next((p for p in state.positions if p['id'] == pos_id), None)
+        if not pos or pos.get('closed', False):
+            return
+
+        # Výpočet PnL
+        if pos['direction'] == 'long':
+            pnl = (current_price - pos['entry_price']) * pos['amount'] * pos['leverage']
+        else:  # short
+            pnl = (pos['entry_price'] - current_price) * pos['amount'] * pos['leverage']
+
+        # Přidat/odebrat PnL k zůstatku USDT
+        state.usdt_balance += pos['margin'] + pnl
+
+        # Uzavřít pozici
+        pos['closed'] = True
+        pos['close_price'] = current_price
+        pos['pnl'] = pnl
+        pos['close_time'] = time.time()
+
+        # Aktualizovat historii
+        for trade in state.trade_history:
+            if trade.get('time') == pos['open_time'] and trade.get('status') == 'Otevřeno':
+                trade['pnl'] = pnl
+                trade['status'] = 'Uzavřeno'
+                trade['close_price'] = current_price
+                break
+
+        save_state()
+        QMessageBox.information(self, 'Obchod', f'Pozice uzavřena, PnL: {pnl:.2f} USDT')
+        self._update_positions()
+        self._update_trade_history()
+        self.update_header()
+
+    # ---------- Aktualizace tabulek ----------
+    def _update_positions(self):
+        current_price = self.last_price if self.last_price else BASE_RATE
+
+        # Aktualizovat PnL u otevřených pozic
+        for pos in state.positions:
+            if not pos.get('closed', False):
+                if pos['direction'] == 'long':
+                    pnl = (current_price - pos['entry_price']) * pos['amount'] * pos['leverage']
+                else:
+                    pnl = (pos['entry_price'] - current_price) * pos['amount'] * pos['leverage']
+                pos['pnl'] = pnl
+
+        # Zobrazit pouze otevřené pozice
+        open_positions = [p for p in state.positions if not p.get('closed', False)]
+
+        self.positions_table.setUpdatesEnabled(False)
+        self.positions_table.setRowCount(len(open_positions))
+
+        for i, pos in enumerate(open_positions):
+            # Směr
+            direction_text = '🟢 LONG' if pos['direction'] == 'long' else '🔴 SHORT'
+            self.positions_table.setItem(i, 0, QTableWidgetItem(direction_text))
+
+            # Vstupní cena
+            self.positions_table.setItem(i, 1, QTableWidgetItem(f'{pos["entry_price"]:.12f}'))
+
+            # Aktuální cena
+            self.positions_table.setItem(i, 2, QTableWidgetItem(f'{current_price:.12f}'))
+
+            # Množství
+            self.positions_table.setItem(i, 3, QTableWidgetItem(f'{pos["amount"]:.2f}'))
+
+            # Margin
+            self.positions_table.setItem(i, 4, QTableWidgetItem(f'{pos["margin"]:.2f}'))
+
+            # PnL
+            pnl = pos['pnl']
+            pnl_item = QTableWidgetItem(f'{pnl:+.2f}')
+            pnl_item.setForeground(Qt.green if pnl >= 0 else Qt.red)
+            self.positions_table.setItem(i, 5, pnl_item)
+
+            # Tlačítko Zavřít
+            close_btn = QPushButton('✕ Zavřít')
+            close_btn.setStyleSheet('''
+                QPushButton {
+                    background: #ef5350;
+                    color: white;
+                    border: none;
+                    border-radius: 4px;
+                    padding: 4px 8px;
+                    font-size: 18px;
+                }
+                QPushButton:hover { background: #f0625c; }
+                QPushButton:pressed { background: #c62828; }
+            ''')
+            close_btn.clicked.connect(lambda checked, pid=pos['id']: self._close_position(pid))
+            self.positions_table.setCellWidget(i, 6, close_btn)
+
+        self.positions_table.resizeColumnsToContents()
+        self.positions_table.setUpdatesEnabled(True)
+
+    def _update_trade_history(self):
+        history = state.trade_history[-20:][::-1]  # posledních 20, nejnovější nahoře
+
+        self.history_table.setUpdatesEnabled(False)
+        self.history_table.setRowCount(len(history))
+
+        for i, trade in enumerate(history):
+            # Čas
+            self.history_table.setItem(i, 0, QTableWidgetItem(format_time(trade['time'])))
+
+            # Směr
+            direction_text = '🟢 LONG' if trade['direction'] == 'long' else '🔴 SHORT'
+            self.history_table.setItem(i, 1, QTableWidgetItem(direction_text))
+
+            # Cena
+            self.history_table.setItem(i, 2, QTableWidgetItem(f'{trade["price"]:.12f}'))
+
+            # Množství
+            self.history_table.setItem(i, 3, QTableWidgetItem(f'{trade["amount"]:.2f}'))
+
+            # PnL
+            pnl = trade.get('pnl', 0.0)
+            pnl_item = QTableWidgetItem(f'{pnl:+.2f}')
+            pnl_item.setForeground(Qt.green if pnl >= 0 else Qt.red)
+            self.history_table.setItem(i, 4, pnl_item)
+
+            # Status
+            self.history_table.setItem(i, 5, QTableWidgetItem(trade['status']))
+
+        self.history_table.resizeColumnsToContents()
+        self.history_table.setUpdatesEnabled(True)
+
+    # ---------- Vykreslení grafu ----------
+    def update_chart(self):
+        candles = self.get_candles(self.current_timeframe)
+        if not candles:
+            return
+
+        self.canvas.ax_price.clear()
+        self.canvas.ax_volume.clear()
+
+        opens = [c['o'] for c in candles]
+        highs = [c['h'] for c in candles]
+        lows = [c['l'] for c in candles]
+        closes = [c['c'] for c in candles]
+        volumes = [c['v'] for c in candles]
+
+        # Svíčky
+        for i, (o, h, l, c) in enumerate(zip(opens, highs, lows, closes)):
+            color = '#26a69a' if c >= o else '#ef5350'
+            self.canvas.ax_price.plot([i, i], [l, h], color=color, linewidth=1)
+            self.canvas.ax_price.bar(i, abs(c - o), bottom=min(o, c), color=color, width=0.6)
+
+        # SMA 20 a 50
+        if len(closes) > 20:
+            sma20 = self.sma(closes, 20)
+            self.canvas.ax_price.plot(range(len(sma20)), sma20, color='#f8b82e', linewidth=1.5, label='SMA 20')
+        if len(closes) > 50:
+            sma50 = self.sma(closes, 50)
+            self.canvas.ax_price.plot(range(len(sma50)), sma50, color='#4caf50', linewidth=1.5, label='SMA 50')
+
+        # Objem
+        colors_vol = ['#26a69a' if c >= o else '#ef5350' for o, c in zip(opens, closes)]
+        self.canvas.ax_volume.bar(range(len(volumes)), volumes, color=colors_vol, alpha=0.5)
+        self.canvas.ax_volume.set_ylabel('Objem', color='#787b86')
+
+        self.canvas.ax_price.set_ylabel('Cena', color='#787b86')
+        self.canvas.ax_price.grid(True, color='#2a2e39', linestyle='-', linewidth=0.5)
+        self.canvas.ax_volume.grid(True, color='#2a2e39', linestyle='-', linewidth=0.5)
+        self.canvas.ax_price.legend(loc='upper left', facecolor='#131722', labelcolor='#d1d4dc')
+
+        self.canvas.fig.tight_layout()
         self.canvas.draw()
 
 # ============================================================
