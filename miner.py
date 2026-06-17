@@ -16,13 +16,13 @@ import os
 #  KONFIGURACE
 # ============================================================
 
-SERVER_HOST = 'localhost'   # IP adresa hlavní aplikace
+SERVER_HOST = 'localhost'
 SERVER_PORT = 9999
 BAUDRATE = 115200
-RECONNECT_DELAY = 5         # sekundy při výpadku spojení
+RECONNECT_DELAY = 5
 
 # ============================================================
-#  FUNKCE PRO ODESÍLÁNÍ DAT NA SERVER
+#  MINER KLIENT
 # ============================================================
 
 class MinerClient:

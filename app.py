@@ -44,11 +44,15 @@ BASE_RATE = 1e-12
 SPREAD = 0.05
 TRANSACTION_FEE = 0.03
 
+# SATOSHI přepočet (1 USDT = 10^8 satoshi)
+SATOSHI = 100000000
+
 # ============================================================
-#  FAUCETPAY API FUNKCE
+#  FAUCETPAY API FUNKCE (OPRAVENÉ)
 # ============================================================
 
 def faucetpay_get_balance():
+    """Získá aktuální zůstatek USDT z FaucetPay."""
     try:
         response = requests.post(
             f"{FAUCETPAY_API_URL}/balance",
@@ -58,24 +62,67 @@ def faucetpay_get_balance():
         if response.status_code == 200:
             data = response.json()
             if data.get("status") == 200:
-                return float(data.get("balance", 0))
+                balance_satoshi = int(data.get("balance", 0))
+                return balance_satoshi / SATOSHI
         return 0.0
-    except Exception:
+    except Exception as e:
+        print(f"Chyba při získávání zůstatku: {e}")
         return 0.0
+
+def faucetpay_deposit(amount_usdt):
+    """
+    Získá deposit adresu pro USDT – uživatel si ji musí najít v dashboardu.
+    Vrací (úspěch, zpráva).
+    """
+    message = (
+        f"Pro vklad {amount_usdt:.8f} USDT postupujte takto:\n\n"
+        f"1. Přihlaste se na https://faucetpay.io\n"
+        f"2. Přejděte do Dashboard → Deposit\n"
+        f"3. Vyberte měnu USDT\n"
+        f"4. Zkopírujte zobrazenou deposit adresu\n"
+        f"5. Pošlete na ni požadovanou částku\n\n"
+        f"Po odeslání platby klikněte na 'Aktualizovat zůstatek' pro načtení nového zůstatku."
+    )
+    return True, message
+
+def faucetpay_withdraw(amount_usdt, to_address):
+    """
+    Provede výběr USDT na zadanou adresu přes FaucetPay API.
+    Vrací (úspěch, zpráva).
+    """
+    if amount_usdt > state.usdt_balance:
+        return False, "Nedostatek USDT na účtě."
+
+    amount_satoshi = int(amount_usdt * SATOSHI)
+
+    try:
+        response = requests.post(
+            f"{FAUCETPAY_API_URL}/send",
+            data={
+                "api_key": FAUCETPAY_API_KEY,
+                "currency": "USDT",
+                "amount": str(amount_satoshi),
+                "to": to_address
+            },
+            timeout=10
+        )
+        if response.status_code == 200:
+            data = response.json()
+            if data.get("status") == 200:
+                state.usdt_balance -= amount_usdt
+                return True, f"Výběr {amount_usdt:.8f} USDT na adresu {to_address} byl úspěšně odeslán."
+            else:
+                return False, f"Chyba API: {data.get('message', 'Neznámá chyba')}"
+        else:
+            return False, f"HTTP chyba: {response.status_code} - {response.text}"
+    except Exception as e:
+        return False, f"Chyba při výběru: {str(e)}"
 
 def faucetpay_get_buy_rate():
     return BASE_RATE * (1 + SPREAD)
 
 def faucetpay_get_sell_rate():
     return BASE_RATE * (1 - SPREAD)
-
-def faucetpay_deposit(amount_usdt):
-    return True, f"Vklad {amount_usdt:.8f} USDT byl úspěšně zpracován na účet {FAUCETPAY_MERCHANT_ID}."
-
-def faucetpay_withdraw(amount_usdt, to_address):
-    if amount_usdt > state.usdt_balance:
-        return False, "Nedostatek USDT na účtě."
-    return True, f"Výběr {amount_usdt:.8f} USDT na adresu {to_address} byl odeslán."
 
 # ============================================================
 #  STAV APLIKACE
@@ -1047,7 +1094,7 @@ class SwapTab(QWidget):
         self.deposit_input.setPlaceholderText('Množství USDT')
         self.deposit_input.setFont(QFont('Segoe UI', 12))
         dep_layout.addWidget(self.deposit_input)
-        dep_btn = QPushButton('Vložit')
+        dep_btn = QPushButton('Získat adresu')
         dep_btn.setStyleSheet('QPushButton { background: #0d6efd; color: white; font-weight: bold; font-size: 13px; padding: 6px 14px; border-radius: 16px; } QPushButton:hover { background: #0b5ed7; }')
         dep_btn.clicked.connect(self._do_deposit)
         dep_layout.addWidget(dep_btn)
@@ -1063,7 +1110,7 @@ class SwapTab(QWidget):
         self.withdraw_address.setPlaceholderText('Cílová adresa')
         self.withdraw_address.setFont(QFont('Segoe UI', 12))
         wd_layout.addWidget(self.withdraw_address)
-        wd_btn = QPushButton('Vybrat')
+        wd_btn = QPushButton('Odeslat výběr')
         wd_btn.setStyleSheet('QPushButton { background: #dc3545; color: white; font-weight: bold; font-size: 13px; padding: 6px 14px; border-radius: 16px; } QPushButton:hover { background: #c82333; }')
         wd_btn.clicked.connect(self._do_withdraw)
         wd_layout.addWidget(wd_btn)
@@ -1196,9 +1243,7 @@ class SwapTab(QWidget):
 
             success, msg = faucetpay_deposit(amount)
             if success:
-                state.usdt_balance += amount
                 self._show_message(msg, 'success')
-                self._refresh_balance()
             else:
                 self._show_message(msg, 'danger')
         except ValueError:
@@ -1218,7 +1263,6 @@ class SwapTab(QWidget):
 
             success, msg = faucetpay_withdraw(amount, to_addr)
             if success:
-                state.usdt_balance -= amount
                 self._show_message(msg, 'success')
                 self._refresh_balance()
             else:
