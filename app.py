@@ -13,6 +13,8 @@ from datetime import datetime
 from collections import deque
 from queue import Queue, Empty
 from pathlib import Path
+from flask import Flask, request, jsonify
+import fcntl
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QTabWidget, QLabel, QPushButton, QLineEdit, QTableWidget,
@@ -47,7 +49,7 @@ FAUCETPAY_API_URL = "https://faucetpay.io/api/v1"
 BASE_RATE = 1e-12
 SPREAD = 0.05
 TRANSACTION_FEE = 0.03
-STATE_FILE = "havirov_state.json"
+STATE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "havirov_state.json")
 
 # ============================================================
 #  FAUCETPAY API FUNKCE
@@ -191,7 +193,7 @@ def faucetpay_get_sell_rate():
 # ============================================================
 
 def save_state():
-    """Uloží aktuální stav aplikace do JSON souboru."""
+    """Uloží aktuální stav aplikace do JSON souboru s file lockingem pro synchronizaci uživatelů."""
     data = {
         'wallet_balance': state.wallet_balance,
         'total_supply': state.total_supply,
@@ -209,21 +211,25 @@ def save_state():
                     for d in state.devices if d.get('connected')]
     }
     try:
-        # Uložíme do dočasného souboru a pak přejmenujeme pro atomičnost
         tmp_file = STATE_FILE + '.tmp'
         with open(tmp_file, 'w', encoding='utf-8') as f:
+            fcntl.flock(f.fileno(), fcntl.LOCK_EX)
             json.dump(data, f, indent=2, ensure_ascii=False)
+            f.flush()
+            fcntl.flock(f.fileno(), fcntl.LOCK_UN)
         os.replace(tmp_file, STATE_FILE)
     except Exception as e:
         print(f"Chyba při ukládání stavu: {e}")
 
 def load_state():
-    """Načte stav aplikace z JSON souboru."""
+    """Načte stav aplikace z JSON souboru s file lockingem."""
     if not os.path.exists(STATE_FILE):
         return
     try:
         with open(STATE_FILE, 'r', encoding='utf-8') as f:
+            fcntl.flock(f.fileno(), fcntl.LOCK_SH)
             data = json.load(f)
+            fcntl.flock(f.fileno(), fcntl.LOCK_UN)
         state.wallet_balance = data.get('wallet_balance', 0.0)
         state.total_supply = data.get('total_supply', 0.0)
         state.block_height = data.get('block_height', 0)
@@ -434,7 +440,7 @@ class TcpServer(QThread):
     client_disconnected = pyqtSignal(str)
     devices_changed = pyqtSignal()
 
-    def __init__(self, host='0.0.0.0', port=9999):
+    def __init__(self, host='0.0.0.0', port=9998):
         super().__init__()
         self.host = host
         self.port = port
@@ -546,7 +552,7 @@ class MainWindow(QMainWindow):
         self.mining_core.devices_changed.connect(self._on_devices_changed)
         self.mining_core.start()
 
-        self.tcp_server = TcpServer(host='0.0.0.0', port=9999)
+        self.tcp_server = TcpServer(host='0.0.0.0', port=9998)
         self.tcp_server.data_received.connect(self._on_tcp_data)
         self.tcp_server.devices_changed.connect(self._on_devices_changed)
         self.tcp_server.start()
@@ -1839,6 +1845,76 @@ class BlockchainTab(QWidget):
         self.block_table.setUpdatesEnabled(True)
 
 # ============================================================
+#  FLASK SERVER PRO FAUCETPAY CALLBACKY
+# ============================================================
+
+FLASK_CALLBACK_PORT = 9999
+
+flask_app = Flask(__name__)
+
+@flask_app.route('/callback', methods=['POST'])
+def faucetpay_callback_route():
+    """Přijímá callbacky z FaucetPay po dokončení platby."""
+    data = request.form.to_dict()
+    print(f"📩 FaucetPay callback: {data}")
+    status = data.get('status', '')
+    if status.lower() == 'completed':
+        amount = float(data.get('amount1', 0))
+        currency = data.get('currency1', 'USDT')
+        custom = data.get('custom', '')
+        print(f"✅ Platba dokončena: {amount} {currency} ({custom})")
+        with state._lock:
+            state.usdt_balance += amount
+            state.transactions.insert(0, {
+                'type': f'Vklad USDT ({custom})',
+                'amount': amount,
+                'address': 'FaucetPay',
+                'time': datetime.now().strftime('%H:%M:%S')
+            })
+            if len(state.transactions) > 20:
+                state.transactions.pop()
+            save_state()
+    return jsonify({"status": "ok"})
+
+@flask_app.route('/success')
+def payment_success():
+    return '''<html>
+<head><meta charset="UTF-8"><title>Platba úspěšná</title>
+<style>body{font-family:Arial;text-align:center;padding:80px}h1{color:#198754}</style>
+</head><body><h1>✅ Platba byla úspěšná</h1>
+<p>Můžete se vrátit do aplikace a kliknout na <strong>Aktualizovat zůstatek</strong>.</p></body></html>'''
+
+@flask_app.route('/cancel')
+def payment_cancel():
+    return '''<html>
+<head><meta charset="UTF-8"><title>Platba zrušena</title>
+<style>body{font-family:Arial;text-align:center;padding:80px}h1{color:#dc3545}</style>
+</head><body><h1>❌ Platba byla zrušena</h1>
+<p>Pokud chcete platbu opakovat, zadejte znovu částku v aplikaci.</p></body></html>'''
+
+@flask_app.route('/')
+def index():
+    return '''<html>
+<head><meta charset="UTF-8"><title>Havirov Coin Server</title>
+<style>body{font-family:Arial;text-align:center;padding:80px}h1{color:#ff7e05}</style>
+</head><body><h1>🪙 Havirov Coin Server</h1>
+<p>Flask server běží. Čekám na callbacky z FaucetPay...</p></body></html>'''
+
+class FlaskServerThread(QThread):
+    """Spouští Flask server v samostatném vlákně."""
+    def __init__(self, host='0.0.0.0', port=FLASK_CALLBACK_PORT):
+        super().__init__()
+        self.host = host
+        self.port = port
+
+    def stop(self):
+        self.terminate()
+
+    def run(self):
+        print(f"🚀 Flask server spuštěn na {self.host}:{self.port}")
+        flask_app.run(host=self.host, port=self.port, debug=False, use_reloader=False)
+
+# ============================================================
 #  SPUŠTĚNÍ APLIKACE
 # ============================================================
 
@@ -1860,6 +1936,10 @@ def main():
         QLineEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus { border-color: #ff7e05; }
         QLabel { font-size: 13px; }
     ''')
+
+    flask_thread = FlaskServerThread()
+    flask_thread.daemon = True
+    flask_thread.start()
 
     window = MainWindow()
     window.show()
