@@ -35,11 +35,9 @@ class MinerClient:
         self._lock = threading.Lock()
 
     def connect(self):
-        """Pokusí se připojit k serveru."""
         try:
             self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self.sock.connect((self.server_host, self.server_port))
-            # Pošleme identifikaci zařízení
             self.sock.sendall(f"DEVICE: {self.device_name}\n".encode('utf-8'))
             return True
         except Exception as e:
@@ -48,7 +46,6 @@ class MinerClient:
             return False
 
     def send_line(self, line):
-        """Odešle jeden řádek na server."""
         if self.sock is None:
             return False
         try:
@@ -59,7 +56,6 @@ class MinerClient:
             return False
 
     def close(self):
-        """Uzavře spojení."""
         if self.sock:
             try:
                 self.sock.close()
@@ -75,14 +71,12 @@ class MinerClient:
 
 
 def run_miner(port, device_name):
-    """Hlavní smyčka pro jeden sériový port."""
     client = MinerClient(device_name)
     ser = None
     try:
         ser = serial.Serial(port, BAUDRATE, timeout=1)
         print(f"Připojeno k {port} jako {device_name}")
 
-        # Pokus o připojení k serveru
         while client._running and not client.is_connected():
             print(f"Pokus o připojení k serveru {SERVER_HOST}:{SERVER_PORT}...")
             if client.connect():
@@ -90,13 +84,11 @@ def run_miner(port, device_name):
             else:
                 time.sleep(RECONNECT_DELAY)
 
-        # Hlavní smyčka čtení a odesílání
         while client._running:
             if ser.in_waiting:
                 line = ser.readline().decode('utf-8', errors='ignore').strip()
                 if line:
                     if not client.send_line(line):
-                        # Ztráta spojení – pokus o opětovné připojení
                         print("Ztráta spojení se serverem, pokus o reconnect...")
                         client.close()
                         while client._running and not client.is_connected():
@@ -122,22 +114,15 @@ def main():
     print(f"Server: {SERVER_HOST}:{SERVER_PORT}")
     print("Hledám sériové porty...")
 
-    # Automatické vyhledání všech dostupných sériových portů
     ports = serial.tools.list_ports.comports()
     if not ports:
         print("Nebyl nalezen žádný sériový port.")
         sys.exit(1)
 
-    # Filtrujeme pouze porty, které typicky odpovídají RPI PICO / Arduino
-    # (můžete upravit podle vlastních potřeb)
     target_ports = []
     for p in ports:
-        # Typicky /dev/ttyACM* nebo /dev/ttyUSB*
         if 'ttyACM' in p.device or 'ttyUSB' in p.device:
             target_ports.append(p.device)
-        else:
-            # Můžete přidat i jiné
-            pass
 
     if not target_ports:
         print("Nenalezen žádný port typu ttyACM nebo ttyUSB.")
@@ -148,25 +133,18 @@ def main():
 
     print(f"Nalezeno {len(target_ports)} portů: {', '.join(target_ports)}")
 
-    # Spustíme vlákno pro každý port
     threads = []
     for port in target_ports:
-        # Vytvoříme název zařízení podle portu
         device_name = f"RPI_{port.replace('/', '_')}"
         t = threading.Thread(target=run_miner, args=(port, device_name), daemon=True)
         t.start()
         threads.append(t)
 
-    # Čekáme na přerušení
     try:
         while True:
             time.sleep(1)
     except KeyboardInterrupt:
         print("\nUkončuji všechny minery...")
-        # Zastavíme všechny klienty
-        for t in threads:
-            # Nemáme přímý přístup k clientům, ale můžeme jen ukončit hlavní smyčku
-            pass
         sys.exit(0)
 
 if __name__ == '__main__':

@@ -1,10 +1,14 @@
 import sys
+import os
 import random
 import time
 import re
 import requests
+import socket
+import threading
 from datetime import datetime
 from collections import deque
+from queue import Queue, Empty
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QTabWidget, QLabel, QPushButton, QLineEdit, QTableWidget,
@@ -12,7 +16,7 @@ from PyQt5.QtWidgets import (
     QFormLayout, QMessageBox, QHeaderView, QSizePolicy,
     QInputDialog, QDialog, QTextEdit
 )
-from PyQt5.QtCore import Qt, QTimer, QThread, pyqtSignal, QSize
+from PyQt5.QtCore import Qt, QTimer, QThread, pyqtSignal, QSize, QObject
 from PyQt5.QtGui import QFont
 
 import matplotlib
@@ -24,6 +28,11 @@ import serial
 import serial.tools.list_ports
 
 # ============================================================
+#  POTLAČENÍ WAYLAND VAROVÁNÍ
+# ============================================================
+os.environ["QT_QPA_PLATFORM"] = "xcb"
+
+# ============================================================
 #  FAUCETPAY KONFIGURACE
 # ============================================================
 
@@ -31,13 +40,8 @@ FAUCETPAY_API_KEY = "69ed69cf56555931401881143a3897f149aefa7afaf30303d32cb64b25d
 FAUCETPAY_MERCHANT_ID = "davepro777cze"
 FAUCETPAY_API_URL = "https://faucetpay.io/api/v1"
 
-# Základní střední kurz (1 HAV = 1e-12 USDT)
 BASE_RATE = 1e-12
-
-# Spread pro nákup/prodej (5 %)
 SPREAD = 0.05
-
-# Poplatek za transakci (3 %)
 TRANSACTION_FEE = 0.03
 
 # ============================================================
@@ -59,33 +63,18 @@ def faucetpay_get_balance():
     except Exception:
         return 0.0
 
-def faucetpay_get_rate():
-    """Vrátí aktuální střední kurz."""
-    return BASE_RATE
-
 def faucetpay_get_buy_rate():
-    """Nákupní cena (uživatel kupuje HAV za USDT) – vyšší než střed."""
     return BASE_RATE * (1 + SPREAD)
 
 def faucetpay_get_sell_rate():
-    """Prodejní cena (uživatel prodává HAV za USDT) – nižší než střed."""
     return BASE_RATE * (1 - SPREAD)
 
 def faucetpay_deposit(amount_usdt):
-    """
-    Simulace vkladu USDT na FaucetPay účet.
-    V reálu by se volalo API pro příjem plateb.
-    """
-    # Zde by se generovala adresa pro deposit
     return True, f"Vklad {amount_usdt:.8f} USDT byl úspěšně zpracován na účet {FAUCETPAY_MERCHANT_ID}."
 
 def faucetpay_withdraw(amount_usdt, to_address):
-    """
-    Simulace výběru USDT z FaucetPay na externí adresu.
-    """
     if amount_usdt > state.usdt_balance:
         return False, "Nedostatek USDT na účtě."
-    # Simulace výběru
     return True, f"Výběr {amount_usdt:.8f} USDT na adresu {to_address} byl odeslán."
 
 # ============================================================
@@ -94,9 +83,9 @@ def faucetpay_withdraw(amount_usdt, to_address):
 
 class HavirovState:
     def __init__(self):
-        self.devices = []           # připojená zařízení (sériové porty)
+        self.devices = []
         self.blockchain = []
-        self.wallet_balance = 0.0   # HAV
+        self.wallet_balance = 0.0
         self.total_supply = 0.0
         self.block_height = 0
         self.difficulty = 0.5
@@ -104,7 +93,7 @@ class HavirovState:
         self.transactions = []
         self.wallet_address = self._gen_address()
         self.reward_distribution = {}
-        self.usdt_balance = 0.0     # USDT na FaucetPay
+        self.usdt_balance = 0.0
 
         self.pool = {
             'total_liquidity': 0.0,
@@ -117,13 +106,11 @@ class HavirovState:
             'history': []
         }
 
-        # Historie cen pro grafy
         self.price_history = deque(maxlen=50)
         for _ in range(50):
             self.price_history.append(BASE_RATE)
 
-        # Objem obchodů pro simulaci pohybu ceny
-        self.trade_volume = 0.0
+        self._lock = threading.Lock()
 
     def _gen_address(self):
         return '0x' + ''.join(random.choice('0123456789abcdef') for _ in range(40))
@@ -173,7 +160,6 @@ def random_hash():
     return '0x' + ''.join(random.choice('0123456789abcdef') for _ in range(8))
 
 def apply_fee(amount):
-    """Aplikuje 3% poplatek na transakci."""
     return amount * (1 - TRANSACTION_FEE)
 
 # ============================================================
@@ -191,6 +177,178 @@ class MplCanvas(FigureCanvas):
         self.ax.clear()
 
 # ============================================================
+#  JÁDRO TĚŽBY (SAMOSTATNÉ VLÁKNO)
+# ============================================================
+
+class MiningCore(QThread):
+    new_block = pyqtSignal(dict)
+    new_transaction = pyqtSignal(dict)
+    devices_changed = pyqtSignal()
+
+    def __init__(self):
+        super().__init__()
+        self._running = True
+        self._queue = Queue()
+        self._lock = threading.Lock()
+
+    def stop(self):
+        self._running = False
+        self.wait()
+
+    def enqueue_data(self, device_name, line):
+        self._queue.put((device_name, line))
+
+    def run(self):
+        while self._running:
+            try:
+                for _ in range(10):
+                    item = self._queue.get_nowait()
+                    self._process_line(item[0], item[1])
+                    self._queue.task_done()
+            except Empty:
+                pass
+            time.sleep(0.01)
+
+    def _process_line(self, device_name, line):
+        if 'BLOCK FOUND!' in line:
+            reward = state.block_reward
+            with state._lock:
+                state.wallet_balance += reward
+                state.total_supply += reward
+                state.block_height += 1
+
+                if device_name in state.reward_distribution:
+                    state.reward_distribution[device_name] += reward
+                else:
+                    state.reward_distribution[device_name] = reward
+
+                block = {
+                    'height': state.block_height,
+                    'hash': random_hash(),
+                    'miner': device_name,
+                    'reward': reward,
+                    'tx_count': 1,
+                    'timestamp': time.time()
+                }
+                state.blockchain.insert(0, block)
+                if len(state.blockchain) > 20:
+                    state.blockchain.pop()
+
+                tx = {
+                    'type': 'Odměna z těžby',
+                    'amount': reward,
+                    'address': device_name,
+                    'time': datetime.now().strftime('%H:%M:%S')
+                }
+                state.transactions.insert(0, tx)
+                if len(state.transactions) > 20:
+                    state.transactions.pop()
+
+            self.new_block.emit(block)
+            self.new_transaction.emit(tx)
+
+# ============================================================
+#  TCP SERVER PRO PŘÍJEM DAT Z MINERŮ
+# ============================================================
+
+class TcpServer(QThread):
+    data_received = pyqtSignal(str, str)
+    client_connected = pyqtSignal(str)
+    client_disconnected = pyqtSignal(str)
+    devices_changed = pyqtSignal()
+
+    def __init__(self, host='0.0.0.0', port=9999):
+        super().__init__()
+        self.host = host
+        self.port = port
+        self._running = True
+        self._clients = {}
+        self._lock = threading.Lock()
+        self.server_socket = None
+
+    def stop(self):
+        self._running = False
+        if self.server_socket:
+            try:
+                self.server_socket.close()
+            except:
+                pass
+        self.wait()
+
+    def run(self):
+        self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            self.server_socket.bind((self.host, self.port))
+            self.server_socket.listen(10)
+            self.server_socket.settimeout(1.0)
+            while self._running:
+                try:
+                    conn, addr = self.server_socket.accept()
+                    if self._running:
+                        client_thread = threading.Thread(target=self._handle_client, args=(conn, addr))
+                        client_thread.daemon = True
+                        client_thread.start()
+                except socket.timeout:
+                    continue
+                except Exception as e:
+                    print(f"Chyba v TCP serveru: {e}")
+        except Exception as e:
+            print(f"Chyba při naslouchání na portu {self.port}: {e}")
+        finally:
+            if self.server_socket:
+                self.server_socket.close()
+
+    def _handle_client(self, conn, addr):
+        device_name = None
+        try:
+            data = conn.recv(1024).decode('utf-8', errors='ignore').strip()
+            if data.startswith('DEVICE:'):
+                device_name = data.split(':', 1)[1].strip()
+            else:
+                device_name = f'Miner-{addr[0]}-{addr[1]}'
+            with self._lock:
+                self._clients[conn] = device_name
+            self.client_connected.emit(device_name)
+            self.devices_changed.emit()
+
+            with state._lock:
+                existing = next((d for d in state.devices if d['name'] == device_name), None)
+                if not existing:
+                    state.devices.append({
+                        'name': device_name,
+                        'port': f'tcp:{addr[0]}:{addr[1]}',
+                        'connected': True,
+                        'thread': None,
+                        'network': True
+                    })
+                else:
+                    existing['connected'] = True
+
+            while self._running:
+                line = conn.recv(4096).decode('utf-8', errors='ignore').strip()
+                if not line:
+                    break
+                if line:
+                    self.data_received.emit(device_name, line)
+        except Exception as e:
+            print(f"Chyba u klienta {addr}: {e}")
+        finally:
+            with self._lock:
+                self._clients.pop(conn, None)
+            if device_name:
+                with state._lock:
+                    dev = next((d for d in state.devices if d['name'] == device_name), None)
+                    if dev:
+                        dev['connected'] = False
+                self.client_disconnected.emit(device_name)
+                self.devices_changed.emit()
+            try:
+                conn.close()
+            except:
+                pass
+
+# ============================================================
 #  HLAVNÍ OKNO
 # ============================================================
 
@@ -200,13 +358,23 @@ class MainWindow(QMainWindow):
         self.setWindowTitle('Havirov Coin - Ostrá verze')
         self.setMinimumSize(1200, 800)
 
+        self.mining_core = MiningCore()
+        self.mining_core.new_block.connect(self._on_new_block)
+        self.mining_core.new_transaction.connect(self._on_new_transaction)
+        self.mining_core.devices_changed.connect(self._on_devices_changed)
+        self.mining_core.start()
+
+        self.tcp_server = TcpServer(host='0.0.0.0', port=9999)
+        self.tcp_server.data_received.connect(self._on_tcp_data)
+        self.tcp_server.devices_changed.connect(self._on_devices_changed)
+        self.tcp_server.start()
+
         central = QWidget()
         self.setCentralWidget(central)
         main_layout = QVBoxLayout(central)
         main_layout.setSpacing(8)
         main_layout.setContentsMargins(10, 10, 10, 10)
 
-        # Hlavička
         header = QHBoxLayout()
         title = QLabel('Havirov Coin')
         title.setFont(QFont('Segoe UI', 24, QFont.Bold))
@@ -219,7 +387,6 @@ class MainWindow(QMainWindow):
         header.addWidget(QLabel(datetime.now().strftime('%H:%M:%S')))
         main_layout.addLayout(header)
 
-        # Taby
         self.tabs = QTabWidget()
         self.tabs.setStyleSheet('''
             QTabBar::tab { padding: 8px 24px; border-radius: 20px; font-weight: 700; font-size: 14px; }
@@ -246,62 +413,47 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self.tab_stats, 'Statistiky')
         self.tabs.addTab(self.tab_blockchain, 'Blockchain')
 
-        footer = QLabel('Havirov Coin · Ostrá verze · Připojení RPI PICO přes sériový port')
+        footer = QLabel('Havirov Coin · Ostrá verze · Připojení RPI PICO přes sériový port nebo TCP')
         footer.setAlignment(Qt.AlignCenter)
         footer.setStyleSheet('color: #7b8a9b; font-size: 13px; padding: 8px; font-weight: 500;')
         main_layout.addWidget(footer)
 
         self.timer = QTimer()
-        self.timer.timeout.connect(self.update_all)
-        self.timer.start(300)
+        self.timer.timeout.connect(self._periodic_update)
+        self.timer.start(1000)
 
         self.showMaximized()
 
-    def update_all(self):
-        self.tab_dashboard.refresh()
-        self.tab_mining.refresh()
+    def _periodic_update(self):
         self.tab_wallet.refresh()
-        self.tab_swap.refresh()
         self.tab_pool.refresh()
         self.tab_stats.refresh()
         self.tab_blockchain.refresh()
 
-# ============================================================
-#  SERIOVÉ VLÁKNO PRO ČTENÍ Z RPI PICO
-# ============================================================
+    def _on_new_block(self, block):
+        self.tab_dashboard.refresh()
+        self.tab_blockchain.refresh()
+        self.tab_wallet.refresh()
+        self.tab_stats.refresh()
 
-class SerialReaderThread(QThread):
-    data_received = pyqtSignal(str)
-    error_occurred = pyqtSignal(str)
+    def _on_new_transaction(self, tx):
+        self.tab_wallet.refresh()
 
-    def __init__(self, port, baudrate=115200):
-        super().__init__()
-        self.port = port
-        self.baudrate = baudrate
-        self._running = True
-        self.ser = None
+    def _on_devices_changed(self):
+        self.tab_mining.refresh_device_table()
+        self.tab_dashboard.refresh()
 
-    def run(self):
-        try:
-            self.ser = serial.Serial(self.port, self.baudrate, timeout=1)
-            while self._running:
-                if self.ser.in_waiting:
-                    line = self.ser.readline().decode('utf-8', errors='ignore').strip()
-                    if line:
-                        self.data_received.emit(line)
-                else:
-                    time.sleep(0.01)
-        except Exception as e:
-            self.error_occurred.emit(str(e))
-        finally:
-            if self.ser and self.ser.is_open:
-                self.ser.close()
+    def _on_tcp_data(self, device_name, line):
+        self.mining_core.enqueue_data(device_name, line)
+        self.tab_mining.add_raw_line(device_name, line)
 
-    def stop(self):
-        self._running = False
-        if self.ser and self.ser.is_open:
-            self.ser.close()
-        self.wait()
+    def closeEvent(self, event):
+        self.mining_core.stop()
+        self.tcp_server.stop()
+        for dev in state.devices:
+            if dev.get('thread'):
+                dev['thread'].stop()
+        event.accept()
 
 # ============================================================
 #  DASHBOARD TAB
@@ -313,7 +465,6 @@ class DashboardTab(QWidget):
         layout = QVBoxLayout(self)
         layout.setSpacing(10)
 
-        # Karty
         card_grid = QGridLayout()
         card_grid.setSpacing(10)
         self.cards = {}
@@ -331,27 +482,18 @@ class DashboardTab(QWidget):
             self.cards[key] = card
         layout.addLayout(card_grid)
 
-        # Grafy
         graph_layout = QHBoxLayout()
         graph_layout.setSpacing(10)
 
         left = QGroupBox('Cena HAV / USDT (24h)')
         left.setStyleSheet('QGroupBox { font-weight: 700; padding: 10px; font-size: 14px; }')
         left_layout = QVBoxLayout(left)
-        self.price_canvas = MplCanvas(self, width=5, height=2.5)
+        self.price_canvas = MplCanvas(self, width=8, height=3)
         left_layout.addWidget(self.price_canvas)
-        graph_layout.addWidget(left, 2)
-
-        right = QGroupBox('Objem obchodů')
-        right.setStyleSheet('QGroupBox { font-weight: 700; padding: 10px; font-size: 14px; }')
-        right_layout = QVBoxLayout(right)
-        self.volume_canvas = MplCanvas(self, width=3, height=2.5)
-        right_layout.addWidget(self.volume_canvas)
-        graph_layout.addWidget(right, 1)
+        graph_layout.addWidget(left)
 
         layout.addLayout(graph_layout)
 
-        # Distribuce odměn
         dist_group = QGroupBox('Distribuce odměn')
         dist_group.setStyleSheet('QGroupBox { font-weight: 700; padding: 10px; font-size: 14px; }')
         dist_layout = QHBoxLayout(dist_group)
@@ -404,7 +546,6 @@ class DashboardTab(QWidget):
         self.cards['pool_tvl']._sub_label.setText(f'APY {state.pool["apy"]}% / 7d')
 
         self._update_price_chart()
-        self._update_volume_chart()
         self._update_reward_table()
 
     def _update_price_chart(self):
@@ -417,15 +558,6 @@ class DashboardTab(QWidget):
         self.price_canvas.ax.grid(True, color='#e9edf4', linestyle='-', linewidth=0.5)
         self.price_canvas.ax.set_ylabel('USDT')
         self.price_canvas.draw()
-
-    def _update_volume_chart(self):
-        # Simulovaný objem
-        volumes = [random.randint(100, 1000) for _ in range(24)]
-        self.volume_canvas.ax.clear()
-        self.volume_canvas.ax.bar(range(len(volumes)), volumes, color='#0d6efd', alpha=0.7)
-        self.volume_canvas.ax.grid(True, axis='y', color='#e9edf4', linestyle='-', linewidth=0.5)
-        self.volume_canvas.ax.set_ylabel('HAV')
-        self.volume_canvas.draw()
 
     def _update_reward_table(self):
         dist = state.reward_distribution
@@ -458,8 +590,50 @@ class DashboardTab(QWidget):
         self.reward_pie_canvas.draw()
 
 # ============================================================
-#  MINING TAB - ZOBRAZUJE SUROVÁ DATA Z HW
+#  MINING TAB
 # ============================================================
+
+class SerialReaderThread(QThread):
+    error_occurred = pyqtSignal(str)
+
+    def __init__(self, port, baudrate=115200, device_name=None, core=None):
+        super().__init__()
+        self.port = port
+        self.baudrate = baudrate
+        self.device_name = device_name or port
+        self._running = True
+        self.ser = None
+        self.core = core
+
+    def run(self):
+        try:
+            self.ser = serial.Serial(self.port, self.baudrate, timeout=1)
+            while self._running:
+                if self.ser.in_waiting:
+                    line = self.ser.readline().decode('utf-8', errors='ignore').strip()
+                    if line and self.core:
+                        self.core.enqueue_data(self.device_name, line)
+                else:
+                    time.sleep(0.01)
+        except Exception as e:
+            self.error_occurred.emit(str(e))
+        finally:
+            if self.ser and self.ser.is_open:
+                try:
+                    self.ser.close()
+                except Exception:
+                    pass
+            self.ser = None
+
+    def stop(self):
+        self._running = False
+        if self.ser and self.ser.is_open:
+            try:
+                self.ser.close()
+            except Exception:
+                pass
+        self.ser = None
+        self.wait()
 
 class MiningTab(QWidget):
     def __init__(self, main_window):
@@ -468,7 +642,6 @@ class MiningTab(QWidget):
         layout = QHBoxLayout(self)
         layout.setSpacing(12)
 
-        # Levá část – seznam zařízení
         left = QWidget()
         left_layout = QVBoxLayout(left)
         header = QHBoxLayout()
@@ -487,7 +660,6 @@ class MiningTab(QWidget):
         left_layout.addWidget(self.device_table)
         layout.addWidget(left, 1)
 
-        # Pravá část – surová data ze sériového portu
         right = QWidget()
         right_layout = QVBoxLayout(right)
 
@@ -499,9 +671,8 @@ class MiningTab(QWidget):
         self.raw_data_display.setStyleSheet('background: #1e1e1e; color: #d4d4d4; border-radius: 8px; padding: 8px;')
         right_layout.addWidget(self.raw_data_display)
 
-        # Ovládání
         ctrl_layout = QHBoxLayout()
-        self.connect_btn = QPushButton('Připojit zařízení')
+        self.connect_btn = QPushButton('Připojit zařízení (sériový port)')
         self.connect_btn.setStyleSheet('QPushButton { background: #ff7e05; color: white; font-weight: bold; font-size: 14px; padding: 8px 16px; border-radius: 20px; } QPushButton:hover { background: #e66e00; }')
         self.connect_btn.clicked.connect(self._connect_device)
         ctrl_layout.addWidget(self.connect_btn)
@@ -526,7 +697,12 @@ class MiningTab(QWidget):
         layout.addWidget(right, 2)
 
         self.reader_threads = []
-        self.refresh()
+        self._raw_buffer = []
+        self._raw_timer = QTimer()
+        self._raw_timer.timeout.connect(self._flush_raw_buffer)
+        self._raw_timer.start(500)
+
+        self.refresh_device_table()
 
     def _connect_device(self):
         ports = serial.tools.list_ports.comports()
@@ -547,56 +723,20 @@ class MiningTab(QWidget):
             'name': f'RPI {device_name}',
             'port': device_name,
             'connected': True,
-            'thread': None
+            'thread': None,
+            'network': False
         }
         state.devices.append(dev)
 
-        thread = SerialReaderThread(device_name, 115200)
-        thread.data_received.connect(lambda line, d=dev: self._process_serial_line(line, d))
+        thread = SerialReaderThread(device_name, 115200, dev['name'], self.main_window.mining_core)
         thread.error_occurred.connect(lambda err: self._serial_error(err, dev))
         thread.start()
         dev['thread'] = thread
         self.reader_threads.append(thread)
 
-        self.refresh()
+        self.main_window.mining_core.devices_changed.emit()
+        self.refresh_device_table()
         QMessageBox.information(self, 'Připojeno', f'Zařízení {device_name} bylo připojeno.')
-
-    def _process_serial_line(self, line, device):
-        # Zobrazí surová data včetně časového razítka
-        timestamp = datetime.now().strftime('%H:%M:%S.%f')[:-3]
-        self.raw_data_display.append(f'[{timestamp}] [{device["name"]}] {line}')
-
-        # Automatické scrollování na konec
-        cursor = self.raw_data_display.textCursor()
-        cursor.movePosition(cursor.End)
-        self.raw_data_display.setTextCursor(cursor)
-
-        # Detekce nalezení bloku (pro odměny)
-        if 'BLOCK FOUND!' in line:
-            reward = state.block_reward
-            state.wallet_balance += reward
-            state.total_supply += reward
-            state.block_height += 1
-
-            if device['name'] in state.reward_distribution:
-                state.reward_distribution[device['name']] += reward
-            else:
-                state.reward_distribution[device['name']] = reward
-
-            block = {'height': state.block_height, 'hash': random_hash(), 'miner': device['name'],
-                     'reward': reward, 'tx_count': 1, 'timestamp': time.time()}
-            state.blockchain.insert(0, block)
-            if len(state.blockchain) > 20:
-                state.blockchain.pop()
-
-            state.transactions.insert(0, {'type': 'Odměna z těžby', 'amount': reward, 'address': device['name'],
-                                          'time': datetime.now().strftime('%H:%M:%S')})
-            if len(state.transactions) > 20:
-                state.transactions.pop()
-
-            self.refresh()
-            if self.main_window:
-                self.main_window.tab_dashboard.refresh()
 
     def _serial_error(self, error, device):
         QMessageBox.warning(self, 'Chyba sériového portu', f'Chyba na zařízení {device["port"]}: {error}')
@@ -604,38 +744,61 @@ class MiningTab(QWidget):
         if device['thread']:
             device['thread'].stop()
             device['thread'] = None
-        self.refresh()
+        self.main_window.mining_core.devices_changed.emit()
+        self.refresh_device_table()
 
     def _disconnect_all(self):
         for dev in state.devices:
-            if dev['thread']:
+            if dev.get('thread'):
                 dev['thread'].stop()
                 dev['thread'] = None
             dev['connected'] = False
         state.devices.clear()
         self.reader_threads.clear()
-        self.refresh()
+        self.main_window.mining_core.devices_changed.emit()
+        self.refresh_device_table()
         if self.main_window:
             self.main_window.tab_dashboard.refresh()
 
-    def refresh(self):
+    def refresh_device_table(self):
         active = [d for d in state.devices if d['connected']]
         self.miner_count_label.setText(str(len(active)))
         self.device_status.setText(f'Stav: {len(active)} zařízení připojeno')
         self.device_status.setStyleSheet('background: #d1e7dd; border-radius: 8px; padding: 8px; font-size: 14px; font-weight: 600;' if active else 'background: #cfe2ff; border-radius: 8px; padding: 8px; font-size: 14px; font-weight: 600;')
         self.disconnect_btn.setVisible(bool(active))
 
+        self.device_table.setUpdatesEnabled(False)
         self.device_table.setRowCount(len(active))
         for i, d in enumerate(active):
             self.device_table.setItem(i, 0, QTableWidgetItem(d['name']))
-            self.device_table.setItem(i, 1, QTableWidgetItem(d['port']))
+            self.device_table.setItem(i, 1, QTableWidgetItem(d.get('port', 'N/A')))
             self.device_table.setItem(i, 2, QTableWidgetItem('🟢 Aktivní'))
         self.device_table.resizeColumnsToContents()
+        self.device_table.setUpdatesEnabled(True)
         self.device_table.setFont(QFont('Segoe UI', 12))
         self.device_table.horizontalHeader().setFont(QFont('Segoe UI', 12, QFont.Bold))
 
+    def add_raw_line(self, device_name, line):
+        timestamp = datetime.now().strftime('%H:%M:%S.%f')[:-3]
+        self._raw_buffer.append(f'[{timestamp}] [{device_name}] {line}')
+        if len(self._raw_buffer) > 500:
+            self._flush_raw_buffer()
+
+    def _flush_raw_buffer(self):
+        if not self._raw_buffer:
+            return
+        lines = self._raw_buffer
+        self._raw_buffer = []
+        for line in lines[:100]:
+            self.raw_data_display.append(line)
+        if len(lines) > 100:
+            self._raw_buffer.extend(lines[100:])
+        cursor = self.raw_data_display.textCursor()
+        cursor.movePosition(cursor.End)
+        self.raw_data_display.setTextCursor(cursor)
+
 # ============================================================
-#  PENĚŽENKA TAB
+#  WALLET TAB
 # ============================================================
 
 class WalletTab(QWidget):
@@ -711,6 +874,7 @@ class WalletTab(QWidget):
         usdt = state.wallet_balance * current_price
         self.usd_label.setText(f'≈ {usdt:.12f} USDT')
 
+        self.tx_table.setUpdatesEnabled(False)
         self.tx_table.setRowCount(len(state.transactions))
         for i, tx in enumerate(state.transactions):
             self.tx_table.setItem(i, 0, QTableWidgetItem(tx['type']))
@@ -718,6 +882,7 @@ class WalletTab(QWidget):
             self.tx_table.setItem(i, 2, QTableWidgetItem(tx['address']))
             self.tx_table.setItem(i, 3, QTableWidgetItem(tx['time']))
         self.tx_table.resizeColumnsToContents()
+        self.tx_table.setUpdatesEnabled(True)
 
     def _copy_address(self):
         QApplication.clipboard().setText(state.wallet_address)
@@ -806,7 +971,7 @@ class SendDialog(QDialog):
         return self._data
 
 # ============================================================
-#  SWAP TAB - S DEPOSIT, WITHDRAW A DYNAMICKÝMI KURZY
+#  SWAP TAB
 # ============================================================
 
 class SwapTab(QWidget):
@@ -815,7 +980,6 @@ class SwapTab(QWidget):
         layout = QHBoxLayout(self)
         layout.setSpacing(12)
 
-        # Levá část – swap
         left = QGroupBox('Swap HAV / USDT')
         left.setStyleSheet('QGroupBox { font-weight: 700; padding: 16px; font-size: 14px; }')
         left_layout = QVBoxLayout(left)
@@ -839,18 +1003,15 @@ class SwapTab(QWidget):
         result_layout.addWidget(QLabel('USDT', font=QFont('Segoe UI', 13, QFont.Bold)))
         left_layout.addLayout(result_layout)
 
-        # Zobrazení kurzů
         rate_info = QLabel()
         rate_info.setStyleSheet('font-weight: 600; color: #0d6efd; font-size: 13px;')
         left_layout.addWidget(rate_info)
         self.rate_info_label = rate_info
 
-        # Poplatek
         fee_label = QLabel(f'Poplatek za transakci: {TRANSACTION_FEE*100:.0f} %')
         fee_label.setStyleSheet('color: #6c757d; font-size: 12px;')
         left_layout.addWidget(fee_label)
 
-        # Příjemce
         recipient_label = QLabel(f'Příjemce USDT: FaucetPay {FAUCETPAY_MERCHANT_ID}')
         recipient_label.setStyleSheet('font-weight: 700; color: #0d6efd; font-size: 14px; background: #e9edf4; padding: 4px; border-radius: 6px;')
         left_layout.addWidget(recipient_label)
@@ -859,7 +1020,6 @@ class SwapTab(QWidget):
         self.balance_label.setStyleSheet('font-weight: 700; color: #0d6efd; font-size: 14px;')
         left_layout.addWidget(self.balance_label)
 
-        # Tlačítka swapu
         swap_btn = QPushButton('🔁 Swap HAV → USDT (prodej)')
         swap_btn.setStyleSheet('QPushButton { background: #ff7e05; color: white; font-weight: bold; font-size: 14px; padding: 8px 16px; border-radius: 20px; } QPushButton:hover { background: #e66e00; }')
         swap_btn.clicked.connect(self._do_sell)
@@ -872,7 +1032,6 @@ class SwapTab(QWidget):
 
         layout.addWidget(left, 1)
 
-        # Pravá část – Deposit a Withdraw
         right = QGroupBox('Deposit / Withdraw USDT')
         right.setStyleSheet('QGroupBox { font-weight: 700; padding: 16px; font-size: 14px; }')
         right_layout = QVBoxLayout(right)
@@ -882,7 +1041,6 @@ class SwapTab(QWidget):
 
         right_layout.addWidget(QLabel('-' * 30))
 
-        # Deposit
         right_layout.addWidget(QLabel('Vklad (Deposit)', font=QFont('Segoe UI', 12, QFont.Bold)))
         dep_layout = QHBoxLayout()
         self.deposit_input = QLineEdit()
@@ -895,7 +1053,6 @@ class SwapTab(QWidget):
         dep_layout.addWidget(dep_btn)
         right_layout.addLayout(dep_layout)
 
-        # Withdraw
         right_layout.addWidget(QLabel('Výběr (Withdraw)', font=QFont('Segoe UI', 12, QFont.Bold)))
         wd_layout = QHBoxLayout()
         self.withdraw_input = QLineEdit()
@@ -932,14 +1089,11 @@ class SwapTab(QWidget):
     def _update_swap(self):
         try:
             amt = float(self.amount_input.text() or 0)
-            # Prodejní cena (prodáváme HAV za USDT)
             sell_rate = faucetpay_get_sell_rate()
             usdt = amt * sell_rate
-            # Aplikace poplatku
             usdt_after_fee = apply_fee(usdt)
             self.result_input.setText(f'{usdt_after_fee:.12f}')
 
-            # Aktualizace informace o kurzu
             buy_rate = faucetpay_get_buy_rate()
             self.rate_info_label.setText(
                 f'Nákup: {buy_rate:.12f} USDT/HAV | Prodej: {sell_rate:.12f} USDT/HAV'
@@ -953,7 +1107,6 @@ class SwapTab(QWidget):
         self.balance_label.setText(f'FaucetPay USDT zůstatek: {balance:.8f}')
 
     def _do_sell(self):
-        """Prodej HAV za USDT (uživatel prodává HAV)."""
         try:
             amt = float(self.amount_input.text() or 0)
             if amt <= 0:
@@ -967,13 +1120,9 @@ class SwapTab(QWidget):
             usdt_raw = amt * sell_rate
             usdt_final = apply_fee(usdt_raw)
 
-            # Odečteme HAV
             state.wallet_balance -= amt
-
-            # Přidáme USDT na FaucetPay účet (simulace)
             state.usdt_balance += usdt_final
 
-            # Pohyb ceny – prodej snižuje cenu
             price_change = -usdt_final * 0.001
             new_price = max(BASE_RATE * 0.5, state.price_history[-1] + price_change)
             state.price_history.append(new_price)
@@ -998,7 +1147,6 @@ class SwapTab(QWidget):
             QMessageBox.warning(self, 'Chyba', 'Zadejte platné číslo.')
 
     def _do_buy(self):
-        """Nákup HAV za USDT (uživatel kupuje HAV)."""
         try:
             amt = float(self.amount_input.text() or 0)
             if amt <= 0:
@@ -1007,19 +1155,15 @@ class SwapTab(QWidget):
 
             buy_rate = faucetpay_get_buy_rate()
             usdt_needed = amt * buy_rate
-            usdt_with_fee = usdt_needed / (1 - TRANSACTION_FEE)  # Poplatek se připočítává
+            usdt_with_fee = usdt_needed / (1 - TRANSACTION_FEE)
 
             if usdt_with_fee > state.usdt_balance:
                 QMessageBox.warning(self, 'Chyba', f'Nedostatek USDT na FaucetPay účtě. Potřebujete {usdt_with_fee:.8f} USDT.')
                 return
 
-            # Odečteme USDT
             state.usdt_balance -= usdt_with_fee
-
-            # Přidáme HAV
             state.wallet_balance += amt
 
-            # Pohyb ceny – nákup zvyšuje cenu
             price_change = usdt_with_fee * 0.001
             new_price = min(BASE_RATE * 2, state.price_history[-1] + price_change)
             state.price_history.append(new_price)
@@ -1044,7 +1188,6 @@ class SwapTab(QWidget):
             QMessageBox.warning(self, 'Chyba', 'Zadejte platné číslo.')
 
     def _do_deposit(self):
-        """Vklad USDT na FaucetPay účet."""
         try:
             amount = float(self.deposit_input.text() or 0)
             if amount <= 0:
@@ -1062,7 +1205,6 @@ class SwapTab(QWidget):
             self._show_message('Zadejte platné číslo.', 'warning')
 
     def _do_withdraw(self):
-        """Výběr USDT z FaucetPay na externí adresu."""
         try:
             amount = float(self.withdraw_input.text() or 0)
             if amount <= 0:
@@ -1212,12 +1354,14 @@ class PoolTab(QWidget):
         self.countdown_label.setText(state.get_pool_countdown())
 
         history = pool['history']
+        self.stake_history_table.setUpdatesEnabled(False)
         self.stake_history_table.setRowCount(len(history))
         for i, h in enumerate(history[:10]):
             self.stake_history_table.setItem(i, 0, QTableWidgetItem(format_date(h['time'])))
             self.stake_history_table.setItem(i, 1, QTableWidgetItem(f'{h["amount"]:.2f} HAV'))
             self.stake_history_table.setItem(i, 2, QTableWidgetItem(h['type']))
         self.stake_history_table.resizeColumnsToContents()
+        self.stake_history_table.setUpdatesEnabled(True)
 
     def _set_max(self):
         self.stake_input.setText(f'{state.wallet_balance:.2f}')
@@ -1363,7 +1507,6 @@ class TradingTab(QWidget):
         self.canvas.ax.plot(data, color='#ff7e05', linewidth=2)
         self.canvas.ax.fill_between(range(len(data)), data, color='#ff7e05', alpha=0.15)
 
-        # Zobrazení spreadu jako stínovaná oblast
         buy_prices = [d * (1 + SPREAD) for d in data]
         sell_prices = [d * (1 - SPREAD) for d in data]
         self.canvas.ax.fill_between(range(len(data)), sell_prices, buy_prices, color='#0d6efd', alpha=0.08)
@@ -1374,7 +1517,7 @@ class TradingTab(QWidget):
         self.canvas.draw()
 
 # ============================================================
-#  STATISTIKY TAB
+#  STATS TAB
 # ============================================================
 
 class StatsTab(QWidget):
@@ -1489,6 +1632,7 @@ class BlockchainTab(QWidget):
         self.blocks_label.setText(str(state.block_height))
 
         blocks = state.blockchain[:15]
+        self.block_table.setUpdatesEnabled(False)
         self.block_table.setRowCount(len(blocks))
         for i, b in enumerate(blocks):
             self.block_table.setItem(i, 0, QTableWidgetItem(f'#{b["height"]}'))
@@ -1498,6 +1642,7 @@ class BlockchainTab(QWidget):
             self.block_table.setItem(i, 4, QTableWidgetItem(str(b['tx_count'])))
             self.block_table.setItem(i, 5, QTableWidgetItem(format_time(b['timestamp'])))
         self.block_table.resizeColumnsToContents()
+        self.block_table.setUpdatesEnabled(True)
 
 # ============================================================
 #  SPUŠTĚNÍ APLIKACE
